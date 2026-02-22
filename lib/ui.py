@@ -239,6 +239,8 @@ def main() -> None:
         ai_base_url = str(saved["AI_BASE_URL"]).strip()
         ai_model = str(saved["AI_MODEL"]).strip()
         api_key = str(saved.get("AI_API_KEY", "") or "")
+        ai_enable_search = bool(saved.get("AI_ENABLE_SEARCH", False))
+        ai_enable_thinking = bool(saved.get("AI_ENABLE_THINKING", False))
         ai_timeout_s = int(saved.get("AI_TIMEOUT_S", 45))
         max_tool_result_chars = int(saved.get("MAX_TOOL_RESULT_CHARS", 5000))
         max_context_messages = int(saved.get("MAX_CONTEXT_MESSAGES", 40))
@@ -262,6 +264,9 @@ def main() -> None:
         ai_base_url = env_ai_base_url or input(f"AI Base URL（默认 {saved['AI_BASE_URL']}）: ").strip() or str(
             saved["AI_BASE_URL"])
         ai_model = env_ai_model or input(f"AI Model（默认 {saved['AI_MODEL']}）: ").strip() or str(saved["AI_MODEL"])
+        ai_base_lower = str(ai_base_url or "").strip().lower()
+        is_dashscope = ("dashscope.aliyuncs.com" in ai_base_lower)
+        is_deepseek = ("api.deepseek.com" in ai_base_lower)
 
         if env_api_key:
             api_key = env_api_key
@@ -282,14 +287,43 @@ def main() -> None:
             max_context_chars = int(
                 input(f"对话上下文最大字符预算（默认 {saved['MAX_CONTEXT_CHARS']}）: ").strip() or saved[
                     "MAX_CONTEXT_CHARS"])
+            if is_dashscope:
+                dflt = "y" if bool(saved.get("AI_ENABLE_SEARCH", False)) else "n"
+                choice = input(
+                    f"启用 AI 联网搜索（DashScope enable_search；默认 {dflt}）(y/N): ").strip().lower()
+                ai_enable_search = choice in {"y", "yes", "1", "true", "on"}
+            else:
+                ai_enable_search = False
+
+            model_lower = str(ai_model or "").strip().lower()
+            if is_deepseek and (model_lower != "deepseek-reasoner"):
+                dflt = "y" if bool(saved.get("AI_ENABLE_THINKING", False)) else "n"
+                choice = input(
+                    f"启用 DeepSeek 思考模式（extra_body.thinking；默认 {dflt}）(y/N): ").strip().lower()
+                ai_enable_thinking = choice in {"y", "yes", "1", "true", "on"}
+            else:
+                ai_enable_thinking = False
         else:
             ai_timeout_s = int(saved.get("AI_TIMEOUT_S", 45))
             max_tool_result_chars = int(saved.get("MAX_TOOL_RESULT_CHARS", 5000))
             max_context_messages = int(saved.get("MAX_CONTEXT_MESSAGES", 40))
             max_context_chars = int(saved.get("MAX_CONTEXT_CHARS", 140000))
+            ai_enable_search = bool(saved.get("AI_ENABLE_SEARCH", False))
+            ai_enable_thinking = bool(saved.get("AI_ENABLE_THINKING", False))
         dangerous_policy = str(saved.get("DANGEROUS_POLICY", "confirm") or "confirm").strip().lower()
         dangerous_allow_regex = str(saved.get("DANGEROUS_ALLOW_REGEX", "") or "")
         dangerous_extra_deny_regex = str(saved.get("DANGEROUS_EXTRA_DENY_REGEX", "") or "")
+
+    ai_base_lower2 = str(ai_base_url or "").strip().lower()
+    is_dashscope2 = ("dashscope.aliyuncs.com" in ai_base_lower2)
+    is_deepseek2 = ("api.deepseek.com" in ai_base_lower2)
+    model_lower2 = str(ai_model or "").strip().lower()
+    if ai_enable_search and (not is_dashscope2):
+        ai_enable_search = False
+    if ai_enable_thinking and (not is_deepseek2):
+        ai_enable_thinking = False
+    if ai_enable_thinking and is_deepseek2 and (model_lower2 == "deepseek-reasoner"):
+        ai_enable_thinking = False
 
     bridge = R2BridgeClient(base_url=base_url, timeout=mcp_timeout_s)
     import atexit
@@ -313,6 +347,8 @@ def main() -> None:
         "AI_BASE_URL": ai_base_url,
         "AI_MODEL": ai_model,
         "AI_API_KEY": api_key,
+        "AI_ENABLE_SEARCH": bool(ai_enable_search),
+        "AI_ENABLE_THINKING": bool(ai_enable_thinking),
         "DEBUG_ENABLED": bool(debug_enabled()),
         "DEBUG_LOG_PATH": debug_log_path(),
         "MCP_TIMEOUT_S": int(mcp_timeout_s),
@@ -339,6 +375,8 @@ def main() -> None:
                 base_url=ai_base_url,
                 tool_specs=schema.ACTIVE_TOOL_SPECS,
                 timeout_s=int(ai_timeout_s),
+                enable_search=bool(ai_enable_search),
+                enable_thinking=bool(ai_enable_thinking),
                 max_tool_result_chars=int(max_tool_result_chars),
                 max_context_messages=int(max_context_messages),
                 max_context_chars=int(max_context_chars),

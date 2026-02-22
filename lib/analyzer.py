@@ -40,6 +40,17 @@ def extract_session_ids(obj: Any) -> set[str]:
 
 class AIAnalyzer:
     @staticmethod
+    def _merge_extra_body(req: Dict[str, Any], extra: Dict[str, Any]) -> None:
+        if not isinstance(extra, dict) or not extra:
+            return
+        cur = req.get("extra_body")
+        if not isinstance(cur, dict):
+            cur = {}
+        merged = dict(cur)
+        merged.update(extra)
+        req["extra_body"] = merged
+
+    @staticmethod
     def _messages_stats(messages: Any) -> Dict[str, int]:
         if not isinstance(messages, list):
             return {"count": 0, "chars": 0}
@@ -104,6 +115,8 @@ class AIAnalyzer:
             kb_path: str = "",
             timeout_s: int = 45,
             client_override: Optional[Any] = None,
+            enable_search: bool = False,
+            enable_thinking: bool = False,
             max_tool_result_chars: int = MAX_TOOL_RESULT_CHARS,
             max_context_messages: int = MAX_CONTEXT_MESSAGES,
             max_context_chars: int = MAX_CONTEXT_CHARS,
@@ -112,12 +125,15 @@ class AIAnalyzer:
             dangerous_extra_deny_regex: str = "",
     ):
         self.client = client_override or AIClientSingleton.get_client(api_key, base_url, timeout=timeout_s)
+        self.base_url = str(base_url or "")
         self.model = model
         self.summary_model = (summary_model or model).strip() or model
         self.tool_specs = tool_specs or {}
         self.kb_path = kb_path
         self.session_ids: set[str] = set()
         self.last_trace_id = ""
+        self.enable_search = bool(enable_search)
+        self.enable_thinking = bool(enable_thinking)
         self.max_tool_result_chars = int(max_tool_result_chars)
         self.max_context_messages = int(max_context_messages)
         self.max_context_chars = int(max_context_chars)
@@ -137,6 +153,40 @@ class AIAnalyzer:
                 }
             )
         ]
+
+    def _maybe_enable_web_search(self, req: Dict[str, Any]) -> None:
+        if not self.enable_search:
+            return
+        base = (self.base_url or "").strip().lower()
+        if "dashscope.aliyuncs.com" not in base:
+            if debug_enabled():
+                debug_log("web_search_skipped", {"reason": "base_url_not_dashscope", "base_url": self.base_url})
+            return
+        self._merge_extra_body(req, {"enable_search": True})
+        if debug_enabled():
+            debug_log("web_search_enabled", {"base_url": self.base_url})
+
+    def _maybe_enable_deepseek_thinking(self, req: Dict[str, Any]) -> None:
+        """
+        DeepSeek 思考模式：通过 extra_body.thinking 启用（适用于 deepseek-chat 等模型）。
+
+        参考文档：
+        - https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+        """
+        if not self.enable_thinking:
+            return
+        base = (self.base_url or "").strip().lower()
+        if "api.deepseek.com" not in base:
+            if debug_enabled():
+                debug_log("thinking_skipped", {"reason": "base_url_not_deepseek", "base_url": self.base_url})
+            return
+        if str(self.model or "").strip().lower() == "deepseek-reasoner":
+            if debug_enabled():
+                debug_log("thinking_skipped", {"reason": "model_is_reasoner", "model": self.model})
+            return
+        self._merge_extra_body(req, {"thinking": {"type": "enabled"}})
+        if debug_enabled():
+            debug_log("thinking_enabled", {"base_url": self.base_url, "model": self.model})
 
     @staticmethod
     def _build_system_prompt_strict(tool_names_hint: str, tool_required_hint: str) -> str:
@@ -766,6 +816,8 @@ class AIAnalyzer:
             debug_log("model_request", {"tool_choice": tool_choice, "messages": self._messages_stats(self.messages)})
         req: Dict[str, Any] = {"model": self.model, "messages": self.messages, "tool_choice": tool_choice,
                                "stream": True}
+        self._maybe_enable_web_search(req)
+        self._maybe_enable_deepseek_thinking(req)
         if tool_choice != "none":
             req["tools"] = [
                 ChatCompletionToolParam(

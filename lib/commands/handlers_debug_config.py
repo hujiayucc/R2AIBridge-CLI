@@ -230,6 +230,20 @@ def handle_config(raw: str, ctx: CommandContext) -> bool:
                 print_info(f"[配置] 已热更新 MCP timeout: {ctx.bridge.timeout}s")
             except (TypeError, ValueError, AttributeError):
                 print_info("[配置] MCP timeout 热更新失败（建议重启）")
+        elif key == "AI_ENABLE_SEARCH":
+            if ctx.analyzer is not None:
+                try:
+                    ctx.analyzer.enable_search = bool(new_val)
+                    print_info(f"[配置] 已热更新 AI_ENABLE_SEARCH: {ctx.analyzer.enable_search}")
+                except (TypeError, ValueError, AttributeError):
+                    print_info("[配置] AI_ENABLE_SEARCH 热更新失败（建议 ai_reload 或重启）")
+        elif key == "AI_ENABLE_THINKING":
+            if ctx.analyzer is not None:
+                try:
+                    ctx.analyzer.enable_thinking = bool(new_val)
+                    print_info(f"[配置] 已热更新 AI_ENABLE_THINKING: {ctx.analyzer.enable_thinking}")
+                except (TypeError, ValueError, AttributeError):
+                    print_info("[配置] AI_ENABLE_THINKING 热更新失败（建议 ai_reload 或重启）")
         elif key in {"MAX_TOOL_RESULT_CHARS", "MAX_CONTEXT_MESSAGES", "MAX_CONTEXT_CHARS"}:
             if ctx.analyzer is not None:
                 if key == "MAX_TOOL_RESULT_CHARS":
