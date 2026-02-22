@@ -792,6 +792,32 @@ class AIAnalyzer:
         answer_buffer = ""
         buffer_limit = 48
         last_finish_reason: str = ""
+        _stream_err_list: list[type[BaseException]] = [TimeoutError]
+        try:
+            import httpx as _httpx  # type: ignore[import-not-found]
+
+            _stream_err_list.extend([_httpx.TimeoutException, _httpx.ReadTimeout])
+        except ImportError:
+            pass
+        try:
+            import httpcore as _httpcore  # type: ignore[import-not-found]
+
+            _stream_err_list.append(_httpcore.ReadTimeout)
+        except ImportError:
+            pass
+        try:
+            import openai as _openai  # type: ignore[import-not-found]
+
+            exc1 = getattr(_openai, "APIConnectionError", None)
+            exc2 = getattr(_openai, "APITimeoutError", None)
+            if isinstance(exc1, type) and issubclass(exc1, BaseException):
+                _stream_err_list.append(exc1)
+            if isinstance(exc2, type) and issubclass(exc2, BaseException):
+                _stream_err_list.append(exc2)
+        except ImportError:
+            pass
+        _stream_errs: tuple[type[BaseException], ...] = tuple(_stream_err_list)
+
         try:
             for chunk in stream:
                 if not chunk.choices:
@@ -847,6 +873,16 @@ class AIAnalyzer:
                 close_fn()
             writer.newline()
             raise UserInterruptError("用户中断了当前 AI 输出") from exc
+        except _stream_errs as exc:
+            close_fn = getattr(stream, "close", None)
+            if callable(close_fn):
+                close_fn()
+            try:
+                writer.stop_markdown_stream()
+            except (ModuleNotFoundError, ImportError, TypeError, ValueError, OSError, AttributeError):
+                pass
+            writer.newline()
+            raise RuntimeError(f"AI 流式请求失败（超时/连接问题）: {type(exc).__name__}: {exc}") from exc
         if (not suppress_answer_output) and (not started) and answer_buffer:
             writer.write_prefix("[回答] ")
             started = True
@@ -1147,7 +1183,7 @@ class AIAnalyzer:
                     continue
                 final_text = str(content).strip()
                 if strict_mode and (
-                not _looks_like_final_markdown(final_text)) and missing_tool_retry < max_missing_tool_retry:
+                        not _looks_like_final_markdown(final_text)) and missing_tool_retry < max_missing_tool_retry:
                     missing_tool_retry += 1
                     print_info("[提示] 未检测到最终 Markdown 结论，继续请求模型完成...")
                     self.messages.append(as_msg(_to_history_msg(assistant_msg)))

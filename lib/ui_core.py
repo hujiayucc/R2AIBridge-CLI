@@ -26,19 +26,32 @@ except ImportError:
     RICH_AVAILABLE = False
     CONSOLE = None
 
+_RICH_BROKEN = False
+
+
+def _disable_rich_runtime() -> None:
+    global _RICH_BROKEN
+    _RICH_BROKEN = True
+
 
 def print_info(text: str) -> None:
-    if RICH_AVAILABLE and CONSOLE is not None:
-        CONSOLE.print(text, markup=False, highlight=False, soft_wrap=True)
-    else:
-        print(text)
+    if RICH_AVAILABLE and (not _RICH_BROKEN) and CONSOLE is not None:
+        try:
+            CONSOLE.print(text, markup=False, highlight=False, soft_wrap=True)
+            return
+        except (ModuleNotFoundError, ImportError, AttributeError, TypeError, ValueError, OSError):
+            _disable_rich_runtime()
+    print(text)
 
 
 def print_markdown(text: str) -> None:
-    if RICH_AVAILABLE and CONSOLE is not None:
-        CONSOLE.print(Markdown(text))
-    else:
-        print(text)
+    if RICH_AVAILABLE and (not _RICH_BROKEN) and CONSOLE is not None and Markdown is not None:
+        try:
+            CONSOLE.print(Markdown(text))
+            return
+        except (ModuleNotFoundError, ImportError, AttributeError, TypeError, ValueError, OSError):
+            _disable_rich_runtime()
+    print(text)
 
 
 class AdaptiveStreamWriter:
@@ -64,6 +77,8 @@ class AdaptiveStreamWriter:
         return 2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1
 
     def enable_markdown_stream(self) -> bool:
+        if _RICH_BROKEN:
+            return False
         if (not self._use_rich) or (CONSOLE is None) or (Markdown is None) or (RichLive is None):
             return False
         try:
@@ -85,7 +100,8 @@ class AdaptiveStreamWriter:
                 transient=True,
             )
             self._md_live.start()
-        except (TypeError, ValueError, OSError, AttributeError):
+        except (ModuleNotFoundError, ImportError, TypeError, ValueError, OSError, AttributeError):
+            _disable_rich_runtime()
             self._md_live = None
             self._md_enabled = False
             return False
@@ -97,11 +113,13 @@ class AdaptiveStreamWriter:
         if self._md_live is not None and Markdown is not None:
             try:
                 self._md_live.update(Markdown(self._md_buffer or ""))
-            except (TypeError, ValueError, OSError, AttributeError):
+            except (ModuleNotFoundError, ImportError, TypeError, ValueError, OSError, AttributeError):
+                _disable_rich_runtime()
                 pass
             try:
                 self._md_live.stop()
-            except (TypeError, ValueError, OSError, AttributeError):
+            except (ModuleNotFoundError, ImportError, TypeError, ValueError, OSError, AttributeError):
+                _disable_rich_runtime()
                 pass
         self._md_live = None
         self._md_enabled = False
@@ -120,7 +138,8 @@ class AdaptiveStreamWriter:
             return
         try:
             self._md_live.update(Markdown(self._md_buffer))
-        except (TypeError, ValueError, OSError, AttributeError):
+        except (ModuleNotFoundError, ImportError, TypeError, ValueError, OSError, AttributeError):
+            _disable_rich_runtime()
             return
         self._md_last_ts = now
         self._md_last_len = len(self._md_buffer)

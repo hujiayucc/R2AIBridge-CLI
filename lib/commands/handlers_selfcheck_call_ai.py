@@ -17,7 +17,7 @@ from lib.kb import (
 )
 from lib.schema import validate_args
 from lib.termux import termux_save_script_wrapper
-from lib.ui_core import print_info, print_markdown
+from lib.ui_core import UserInterruptError, print_info, print_markdown
 
 
 def _render_tools_markdown(tool_specs: object) -> str:
@@ -248,7 +248,10 @@ def _run_ai_question(ctx: CommandContext, question: str, *, mode: str = "loose")
             msg += ": " + ", ".join(ids[:6])
         print_info(msg)
     prompt = (kb_ctx + "\n\n" if kb_ctx else "") + question
-    result = ctx.analyzer.chat(prompt, ctx.bridge, mode=mode)
+    try:
+        result = ctx.analyzer.chat(prompt, ctx.bridge, mode=mode)
+    except UserInterruptError:
+        return "已中断当前 AI 思考。"
     try:
         ctx.known_sessions.update(set(getattr(ctx.analyzer, "session_ids", set()) or set()))
     except (TypeError, ValueError, AttributeError):
