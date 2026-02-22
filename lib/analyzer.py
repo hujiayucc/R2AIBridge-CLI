@@ -779,7 +779,6 @@ class AIAnalyzer:
                 )
                 for k, v in self.tool_specs.items()
             ]
-        stream = self.client.chat.completions.create(**req)
         msg: Dict[str, Any] = {"role": "assistant", "content": "", "reasoning_content": ""}
         tool_calls: List[Dict[str, Any]] = []
         writer = AdaptiveStreamWriter()
@@ -808,15 +807,28 @@ class AIAnalyzer:
         try:
             import openai as _openai  # type: ignore[import-not-found]
 
-            exc1 = getattr(_openai, "APIConnectionError", None)
-            exc2 = getattr(_openai, "APITimeoutError", None)
-            if isinstance(exc1, type) and issubclass(exc1, BaseException):
-                _stream_err_list.append(exc1)
-            if isinstance(exc2, type) and issubclass(exc2, BaseException):
-                _stream_err_list.append(exc2)
+            for _n in [
+                "APIConnectionError",
+                "APITimeoutError",
+                "RateLimitError",
+                "APIStatusError",
+                "APIError",
+                "BadRequestError",
+                "AuthenticationError",
+                "PermissionDeniedError",
+                "InternalServerError",
+            ]:
+                _cls = getattr(_openai, _n, None)
+                if isinstance(_cls, type) and issubclass(_cls, BaseException):
+                    _stream_err_list.append(_cls)
         except ImportError:
             pass
         _stream_errs: tuple[type[BaseException], ...] = tuple(_stream_err_list)
+
+        try:
+            stream = self.client.chat.completions.create(**req)
+        except _stream_errs as exc:
+            raise RuntimeError(f"AI 请求失败（连接/超时/服务端错误）: {type(exc).__name__}: {exc}") from exc
 
         try:
             for chunk in stream:
