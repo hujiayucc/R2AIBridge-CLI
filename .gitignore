@@ -1,0 +1,8 @@
+*.json
+/files/
+/.venv/
+.idea
+/debug.log.jsonl
+.r2_cli_history
+__pycache__
+*/__pycache__
