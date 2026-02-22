@@ -315,6 +315,9 @@ def handle_ai(raw: str, ctx: CommandContext) -> bool:
             save_choice = input("是否将本次最终结果写入知识库？(y/N): ").strip().lower()
             if save_choice == "y":
                 dsml_found = contains_dsml_markup(result)
+                if str(result or "").strip() in {"本轮分析结束。", "(模型未返回文本)"}:
+                    print_info("[知识库] 已跳过写入（原因：结果为占位文本，和最终输出不一致风险高）。")
+                    dsml_found = True
                 force = "n"
                 if dsml_found:
                     force = input(

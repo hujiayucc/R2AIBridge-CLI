@@ -1005,12 +1005,19 @@ class AIAnalyzer:
         self.last_trace_id = trace_id
         turn_id = 0
         strict_mode = (chat_mode == "strict")
+        last_nonempty_answer: str = ""
         for _ in range(max_turns):
             turn_id += 1
             assistant_msg = self._stream_assistant_turn(tool_choice="auto")
             finish_reason = str(assistant_msg.get("_finish_reason") or "").strip().lower()
             answer_started = bool(assistant_msg.get("_answer_started") is True)
             tool_calls = assistant_msg.get("tool_calls", [])
+            try:
+                cur = str(assistant_msg.get("content") or "").strip()
+                if cur:
+                    last_nonempty_answer = cur
+            except (TypeError, ValueError):
+                pass
             if debug_enabled():
                 names: List[str] = []
                 if isinstance(tool_calls, list):
@@ -1423,10 +1430,15 @@ class AIAnalyzer:
                     recoverable_retry = 0
                     recoverable_hint_retry = 0
         summary_msg = self._stream_assistant_turn(tool_choice="none")
-        content = summary_msg.get("content") or "本轮分析结束。"
-        if RICH_AVAILABLE and content.strip():
-            print_info("[最终结果 Markdown 渲染]")
-            print_markdown(content)
+        content = str(summary_msg.get("content") or "").strip()
+        if not content:
+            content = (last_nonempty_answer or "本轮分析结束。").strip()
+        if content:
+            if RICH_AVAILABLE:
+                print_info("[最终结果 Markdown 渲染]")
+                print_markdown(content)
+            else:
+                print_info(content)
         self.messages.append(as_msg(summary_msg))
         self._trim_messages()
         return content
