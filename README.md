@@ -69,8 +69,8 @@ python main.py
 - `MCP_TIMEOUT_S`：访问 bridge 的 HTTP 超时（秒）
 - `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` / `AI_TIMEOUT_S`
 - `AI_ENABLE_SEARCH`：是否启用“模型侧联网搜索”（DashScope OpenAI 兼容模式的 `enable_search`；默认关闭）
-- `AI_ENABLE_THINKING`：是否启用 DeepSeek 思考模式（OpenAI SDK 通过 `extra_body.thinking`；默认关闭；`deepseek-reasoner`
-  无需开启）
+- `AI_ENABLE_THINKING`：是否启用“深度思考”（DeepSeek: `extra_body.thinking`；DashScope/Qwen: `extra_body.enable_thinking`；默认关闭；`deepseek-reasoner` 无需开启）
+- `AI_THINKING_BUDGET`：深度思考预算（DashScope: `thinking_budget`；0=不限制/不传；默认 0）
 - `MAX_TOOL_RESULT_CHARS`：单次工具结果保留字符数（过长会压缩/截断）
 - `MAX_CONTEXT_MESSAGES` / `MAX_CONTEXT_CHARS`：对话上下文裁剪预算
 - `DEBUG_ENABLED` / `DEBUG_LOG_PATH` / `DEBUG_MAX_BYTES`

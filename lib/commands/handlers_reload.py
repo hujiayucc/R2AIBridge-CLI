@@ -77,6 +77,7 @@ def handle_ai_reload(raw: str, ctx: CommandContext) -> bool:
             timeout_s=int(ctx.current_config.get("AI_TIMEOUT_S", 45) or 45),
             enable_search=bool(ctx.current_config.get("AI_ENABLE_SEARCH", False)),
             enable_thinking=bool(ctx.current_config.get("AI_ENABLE_THINKING", False)),
+            thinking_budget=int(ctx.current_config.get("AI_THINKING_BUDGET", 0) or 0),
             max_tool_result_chars=int(ctx.current_config.get("MAX_TOOL_RESULT_CHARS", 5000) or 5000),
             max_context_messages=int(ctx.current_config.get("MAX_CONTEXT_MESSAGES", 40) or 40),
             max_context_chars=int(ctx.current_config.get("MAX_CONTEXT_CHARS", 140000) or 140000),

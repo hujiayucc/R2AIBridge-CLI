@@ -117,6 +117,7 @@ class AIAnalyzer:
             client_override: Optional[Any] = None,
             enable_search: bool = False,
             enable_thinking: bool = False,
+            thinking_budget: int = 0,
             max_tool_result_chars: int = MAX_TOOL_RESULT_CHARS,
             max_context_messages: int = MAX_CONTEXT_MESSAGES,
             max_context_chars: int = MAX_CONTEXT_CHARS,
@@ -139,6 +140,7 @@ class AIAnalyzer:
         self._repeat_same_tool_calls_after_exec = 0
         self.enable_search = bool(enable_search)
         self.enable_thinking = bool(enable_thinking)
+        self.thinking_budget = int(thinking_budget or 0)
         self.max_tool_result_chars = int(max_tool_result_chars)
         self.max_context_messages = int(max_context_messages)
         self.max_context_chars = int(max_context_chars)
@@ -235,6 +237,27 @@ class AIAnalyzer:
         self._merge_extra_body(req, {"enable_search": True})
         if debug_enabled():
             debug_log("web_search_enabled", {"base_url": self.base_url})
+
+    def _maybe_enable_dashscope_deep_thinking(self, req: Dict[str, Any]) -> None:
+        """
+        DashScope(OpenAI 兼容) 深度思考：
+        - extra_body.enable_thinking=true
+        - 可选 extra_body.thinking_budget
+
+        参考文档：
+        - https://help.aliyun.com/zh/model-studio/deep-thinking
+        """
+        if not self.enable_thinking:
+            return
+        base = (self.base_url or "").strip().lower()
+        if "dashscope.aliyuncs.com" not in base:
+            return
+        extra: Dict[str, Any] = {"enable_thinking": True}
+        if isinstance(self.thinking_budget, int) and self.thinking_budget > 0:
+            extra["thinking_budget"] = int(self.thinking_budget)
+        self._merge_extra_body(req, extra)
+        if debug_enabled():
+            debug_log("dashscope_thinking_enabled", {"base_url": self.base_url, "thinking_budget": self.thinking_budget})
 
     def _maybe_enable_deepseek_thinking(self, req: Dict[str, Any]) -> None:
         if not self.enable_thinking:
@@ -460,6 +483,11 @@ class AIAnalyzer:
                 tail = tail[1:]
 
             self.messages = [system_msg] + tail
+            try:
+                self._sanitize_messages_for_tools()
+            except (TypeError, ValueError, KeyError) as exc:
+                if debug_enabled():
+                    debug_log("trim_sanitize_after_count", {"error": f"{type(exc).__name__}: {str(exc)[:200]}"})
 
         try:
             total_chars = 0
@@ -527,11 +555,21 @@ class AIAnalyzer:
                 while tail2 and isinstance(tail2[0], dict) and tail2[0].get("role") == "tool":
                     tail2 = tail2[1:]
                 self.messages = self.messages[:1] + tail2
+            try:
+                self._sanitize_messages_for_tools()
+            except (TypeError, ValueError, KeyError) as exc:
+                if debug_enabled():
+                    debug_log("trim_sanitize_after_chars", {"error": f"{type(exc).__name__}: {str(exc)[:200]}"})
         except (TypeError, ValueError, KeyError) as exc:
             if debug_enabled():
                 debug_log("trim_char_budget_error", {"error": f"{type(exc).__name__}: {str(exc)[:200]}"})
             return
         finally:
+            try:
+                self._sanitize_messages_for_tools()
+            except (TypeError, ValueError, KeyError) as exc:
+                if debug_enabled():
+                    debug_log("trim_sanitize_final", {"error": f"{type(exc).__name__}: {str(exc)[:200]}"})
             if before is not None:
                 after = self._messages_stats(self.messages)
                 if before != after:
@@ -954,6 +992,7 @@ class AIAnalyzer:
         req: Dict[str, Any] = {"model": self.model, "messages": self.messages, "tool_choice": tool_choice,
                                "stream": True}
         self._maybe_enable_web_search(req)
+        self._maybe_enable_dashscope_deep_thinking(req)
         self._maybe_enable_deepseek_thinking(req)
         if tool_choice != "none":
             req["tools"] = [

@@ -192,6 +192,70 @@ class StabilityTests(unittest.TestCase):
             "cd /data/data/com.termux/files/home && ls",
         )
 
+    def test_dashscope_thinking_merges_extra_body(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        a = AIAnalyzer(
+            api_key="x",
+            model="qwen-plus",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            tool_specs={},
+            client_override=self._DummyClient(),
+            enable_search=True,
+            enable_thinking=True,
+            thinking_budget=50,
+        )
+        req: dict = {}
+        a._maybe_enable_web_search(req)
+        a._maybe_enable_dashscope_deep_thinking(req)
+        eb = req.get("extra_body")
+        self.assertIsInstance(eb, dict)
+        self.assertEqual(eb.get("enable_search"), True)
+        self.assertEqual(eb.get("enable_thinking"), True)
+        self.assertEqual(eb.get("thinking_budget"), 50)
+
+    def test_trim_never_leaves_orphan_assistant_with_tool_calls(self) -> None:
+        """裁剪后不得留下孤立的 assistant(tool_calls)，否则会触发 Invalid consecutive assistant message"""
+        from lib.analyzer import AIAnalyzer
+
+        a = AIAnalyzer(
+            api_key="x",
+            model="m",
+            base_url="http://example.invalid",
+            tool_specs={},
+            client_override=self._DummyClient(),
+            max_context_messages=5,
+            max_context_chars=999999,
+        )
+        # 构造：裁剪后 tail 末尾可能是 assistant(tool_calls) 且无 tool 响应
+        a.messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ]},
+            # 无 tool 响应，裁剪后可能只剩 assistant
+        ]
+        a._trim_messages()
+        # 最终不得有 assistant(tool_calls) 且其后无 tool
+        for i, m in enumerate(a.messages):
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") != "assistant":
+                continue
+            tcs = m.get("tool_calls")
+            if not (isinstance(tcs, list) and tcs):
+                continue
+            # 有 tool_calls 的 assistant 必须有后续 tool
+            next_idx = i + 1
+            if next_idx >= len(a.messages):
+                self.fail(f"assistant at {i} has tool_calls but no following tool message")
+            next_msg = a.messages[next_idx]
+            if not isinstance(next_msg, dict) or next_msg.get("role") != "tool":
+                self.fail(f"assistant at {i} has tool_calls but next is {next_msg.get('role')}")
+
     def test_recoverable_prompt_mentions_success_tools(self) -> None:
         from lib.analyzer import AIAnalyzer
 

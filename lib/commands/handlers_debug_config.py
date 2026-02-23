@@ -244,6 +244,13 @@ def handle_config(raw: str, ctx: CommandContext) -> bool:
                     print_info(f"[配置] 已热更新 AI_ENABLE_THINKING: {ctx.analyzer.enable_thinking}")
                 except (TypeError, ValueError, AttributeError):
                     print_info("[配置] AI_ENABLE_THINKING 热更新失败（建议 ai_reload 或重启）")
+        elif key == "AI_THINKING_BUDGET":
+            if ctx.analyzer is not None:
+                try:
+                    ctx.analyzer.thinking_budget = int(new_val)
+                    print_info(f"[配置] 已热更新 AI_THINKING_BUDGET: {ctx.analyzer.thinking_budget}")
+                except (TypeError, ValueError, AttributeError):
+                    print_info("[配置] AI_THINKING_BUDGET 热更新失败（建议 ai_reload 或重启）")
         elif key in {"MAX_TOOL_RESULT_CHARS", "MAX_CONTEXT_MESSAGES", "MAX_CONTEXT_CHARS"}:
             if ctx.analyzer is not None:
                 if key == "MAX_TOOL_RESULT_CHARS":

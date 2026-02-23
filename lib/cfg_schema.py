@@ -33,6 +33,7 @@ CFG_FIELDS: List[CfgField] = [
     CfgField("AI_API_KEY", "str", "", required=True, non_empty=False),
     CfgField("AI_ENABLE_SEARCH", "bool", False, required=True),
     CfgField("AI_ENABLE_THINKING", "bool", False, required=True),
+    CfgField("AI_THINKING_BUDGET", "int", 0, required=True, min_int=0),
     CfgField("DEBUG_ENABLED", "bool", False, required=True),
     CfgField("DEBUG_LOG_PATH", "str", DEBUG_LOG_PATH, required=True, non_empty=True),
     CfgField("MCP_TIMEOUT_S", "int", int(DEFAULT_TIMEOUT), required=True, min_int=1),

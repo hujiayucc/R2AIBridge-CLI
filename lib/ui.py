@@ -241,6 +241,7 @@ def main() -> None:
         api_key = str(saved.get("AI_API_KEY", "") or "")
         ai_enable_search = bool(saved.get("AI_ENABLE_SEARCH", False))
         ai_enable_thinking = bool(saved.get("AI_ENABLE_THINKING", False))
+        ai_thinking_budget = int(saved.get("AI_THINKING_BUDGET", 0) or 0)
         ai_timeout_s = int(saved.get("AI_TIMEOUT_S", 45))
         max_tool_result_chars = int(saved.get("MAX_TOOL_RESULT_CHARS", 5000))
         max_context_messages = int(saved.get("MAX_CONTEXT_MESSAGES", 40))
@@ -301,8 +302,25 @@ def main() -> None:
                 choice = input(
                     f"启用 DeepSeek 思考模式（extra_body.thinking；默认 {dflt}）(y/N): ").strip().lower()
                 ai_enable_thinking = choice in {"y", "yes", "1", "true", "on"}
+                ai_thinking_budget = 0
+            elif is_dashscope:
+                # DashScope 深度思考：enable_thinking / thinking_budget（通过 extra_body 注入）
+                dflt = "y" if bool(saved.get("AI_ENABLE_THINKING", False)) else "n"
+                choice = input(
+                    f"启用深度思考（DashScope enable_thinking；默认 {dflt}）(y/N): ").strip().lower()
+                ai_enable_thinking = choice in {"y", "yes", "1", "true", "on"}
+                if ai_enable_thinking:
+                    tb = str(saved.get("AI_THINKING_BUDGET", 0) or 0)
+                    raw_tb = input(f"thinking_budget（0=不限制/不传；默认 {tb}）: ").strip()
+                    if raw_tb.isdigit():
+                        ai_thinking_budget = int(raw_tb)
+                    else:
+                        ai_thinking_budget = int(saved.get("AI_THINKING_BUDGET", 0) or 0)
+                else:
+                    ai_thinking_budget = 0
             else:
                 ai_enable_thinking = False
+                ai_thinking_budget = 0
         else:
             ai_timeout_s = int(saved.get("AI_TIMEOUT_S", 45))
             max_tool_result_chars = int(saved.get("MAX_TOOL_RESULT_CHARS", 5000))
@@ -310,6 +328,7 @@ def main() -> None:
             max_context_chars = int(saved.get("MAX_CONTEXT_CHARS", 140000))
             ai_enable_search = bool(saved.get("AI_ENABLE_SEARCH", False))
             ai_enable_thinking = bool(saved.get("AI_ENABLE_THINKING", False))
+            ai_thinking_budget = int(saved.get("AI_THINKING_BUDGET", 0) or 0)
         dangerous_policy = str(saved.get("DANGEROUS_POLICY", "confirm") or "confirm").strip().lower()
         dangerous_allow_regex = str(saved.get("DANGEROUS_ALLOW_REGEX", "") or "")
         dangerous_extra_deny_regex = str(saved.get("DANGEROUS_EXTRA_DENY_REGEX", "") or "")
@@ -320,10 +339,12 @@ def main() -> None:
     model_lower2 = str(ai_model or "").strip().lower()
     if ai_enable_search and (not is_dashscope2):
         ai_enable_search = False
-    if ai_enable_thinking and (not is_deepseek2):
+    if ai_enable_thinking and (not (is_deepseek2 or is_dashscope2)):
         ai_enable_thinking = False
     if ai_enable_thinking and is_deepseek2 and (model_lower2 == "deepseek-reasoner"):
         ai_enable_thinking = False
+    if (not is_dashscope2) and ai_thinking_budget:
+        ai_thinking_budget = 0
 
     bridge = R2BridgeClient(base_url=base_url, timeout=mcp_timeout_s)
     import atexit
@@ -349,6 +370,7 @@ def main() -> None:
         "AI_API_KEY": api_key,
         "AI_ENABLE_SEARCH": bool(ai_enable_search),
         "AI_ENABLE_THINKING": bool(ai_enable_thinking),
+        "AI_THINKING_BUDGET": int(ai_thinking_budget),
         "DEBUG_ENABLED": bool(debug_enabled()),
         "DEBUG_LOG_PATH": debug_log_path(),
         "MCP_TIMEOUT_S": int(mcp_timeout_s),
@@ -377,6 +399,7 @@ def main() -> None:
                 timeout_s=int(ai_timeout_s),
                 enable_search=bool(ai_enable_search),
                 enable_thinking=bool(ai_enable_thinking),
+                thinking_budget=int(ai_thinking_budget),
                 max_tool_result_chars=int(max_tool_result_chars),
                 max_context_messages=int(max_context_messages),
                 max_context_chars=int(max_context_chars),
