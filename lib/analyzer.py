@@ -563,38 +563,80 @@ class AIAnalyzer:
                     item["function"]["arguments"] += fn.arguments
 
     def _sanitize_messages_for_tools(self) -> None:
+        """
+        保证发送给 API 的 messages 满足 tool_calls 协议：
+        - tool 消息必须紧跟在触发它的 assistant(tool_calls) 后
+        - assistant.tool_calls 里的每个 id 必须有对应 tool(tool_call_id=id)
+
+        这一步是“协议级兜底”，用于修复：中断/裁剪/异常导致的 tool_calls/tool 不配对，避免 400。
+        """
+        src = [m for m in self.messages if isinstance(m, dict)]
         cleaned: List[ChatCompletionMessageParam] = []
-        last_tool_ids: set[str] = set()
-        for msg in self.messages:
-            if not isinstance(msg, dict):
-                continue
+        i = 0
+        while i < len(src):
+            msg = src[i]
             role = str(msg.get("role", "") or "")
-            if role == "assistant":
-                last_tool_ids = set()
-                tcs = msg.get("tool_calls")
-                if isinstance(tcs, list):
-                    for i, tc in enumerate(tcs):
-                        if not isinstance(tc, dict):
-                            continue
-                        fn = tc.get("function")
-                        name = ""
-                        if isinstance(fn, dict):
-                            name = str(fn.get("name", "") or "").strip()
-                        tid = str(tc.get("id", "") or "").strip()
-                        if (not tid) and name:
-                            tid = f"fixup_{len(cleaned)}_{i}"
-                            tc["id"] = tid
-                        if tid:
-                            last_tool_ids.add(tid)
-                cleaned.append(as_msg(msg))
-                continue
-            if role == "tool":
-                tci = str(msg.get("tool_call_id", "") or "").strip()
-                if tci and (tci in last_tool_ids):
+            if role != "assistant":
+                # tool 不能独立存在（必须跟随 assistant.tool_calls）；孤儿 tool 丢弃
+                if role != "tool":
                     cleaned.append(as_msg(msg))
+                i += 1
                 continue
-            last_tool_ids = set()
-            cleaned.append(as_msg(msg))
+
+            # assistant
+            tcs_raw = msg.get("tool_calls")
+            if not (isinstance(tcs_raw, list) and tcs_raw):
+                cleaned.append(as_msg(msg))
+                i += 1
+                continue
+
+            expected_ids: List[str] = []
+            fixed_tcs: List[Dict[str, Any]] = []
+            for idx, tc in enumerate(tcs_raw):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                name = str(fn.get("name", "") or "").strip() if isinstance(fn, dict) else ""
+                tid = str(tc.get("id", "") or "").strip()
+                if (not tid) and name:
+                    tid = f"fixup_{len(cleaned)}_{idx}"
+                    tc["id"] = tid
+                if not tid or not name:
+                    continue
+                expected_ids.append(tid)
+                fixed_tcs.append(tc)
+
+            j = i + 1
+            tool_msgs: List[Dict[str, Any]] = []
+            responded: set[str] = set()
+            while j < len(src):
+                tm = src[j]
+                t_role = str(tm.get("role", "") or "")
+                if t_role != "tool":
+                    break
+                tci = str(tm.get("tool_call_id", "") or "").strip()
+                if tci and (tci in expected_ids):
+                    tool_msgs.append(tm)
+                    responded.add(tci)
+                j += 1
+
+            filtered_tcs = [tc for tc in fixed_tcs if str(tc.get("id", "") or "").strip() in responded]
+            am_out = dict(msg)
+            if filtered_tcs:
+                am_out["tool_calls"] = filtered_tcs
+            else:
+                am_out.pop("tool_calls", None)
+                c = str(am_out.get("content", "") or "").strip()
+                r = str(am_out.get("reasoning_content", "") or "").strip()
+                if (not c) and (not r):
+                    i = j
+                    continue
+
+            cleaned.append(as_msg(am_out))
+            for tm in tool_msgs:
+                cleaned.append(as_msg(tm))
+            i = j
+
         self.messages = cleaned
 
     @staticmethod

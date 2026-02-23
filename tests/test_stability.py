@@ -129,6 +129,37 @@ class StabilityTests(unittest.TestCase):
             elif msg.get("role") == "tool":
                 self.assertIn(msg.get("tool_call_id"), allowed)
 
+    def test_sanitize_drops_unresponded_tool_calls(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        a = AIAnalyzer(
+            api_key="x",
+            model="m",
+            base_url="http://example.invalid",
+            tool_specs={},
+            client_override=self._DummyClient(),
+            max_context_chars=999999,
+            max_context_messages=999,
+        )
+        a.messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                {"id": "tc2", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "ok"},
+            # tc2 missing tool response
+            {"role": "user", "content": "next"},
+        ]
+        a._trim_messages()
+        # assistant.tool_calls should not contain tc2 after sanitization
+        am = a.messages[1]
+        self.assertEqual(am.get("role"), "assistant")
+        tcs = am.get("tool_calls") or []
+        ids = [tc.get("id") for tc in tcs if isinstance(tc, dict)]
+        self.assertIn("tc1", ids)
+        self.assertNotIn("tc2", ids)
+
     def test_recoverable_prompt_mentions_success_tools(self) -> None:
         from lib.analyzer import AIAnalyzer
 
