@@ -133,6 +133,10 @@ class AIAnalyzer:
         self.session_ids: set[str] = set()
         self.last_trace_id = ""
         self.last_r2_file_path = ""
+        self.last_good_session_id = ""
+        self._r2_open_file_cache: Dict[str, Any] = {}
+        self._last_tool_calls_sig = ""
+        self._repeat_same_tool_calls = 0
         self.enable_search = bool(enable_search)
         self.enable_thinking = bool(enable_thinking)
         self.max_tool_result_chars = int(max_tool_result_chars)
@@ -190,6 +194,26 @@ class AIAnalyzer:
                 if fp:
                     return fp
         return ""
+
+    @staticmethod
+    def _tool_calls_signature(tool_calls: Any) -> str:
+        """
+        用于检测“模型重复刷同一组 tool_calls”的兜底签名（尽量稳定、与 tool_call_id 无关）。
+        """
+        if not isinstance(tool_calls, list):
+            return ""
+        parts: List[str] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = str(fn.get("name", "") or "").strip()
+            args_raw = fn.get("arguments")
+            args_txt = str(args_raw or "")
+            parts.append(name + ":" + args_txt)
+        return "|".join(parts)
 
     def _maybe_enable_web_search(self, req: Dict[str, Any]) -> None:
         if not self.enable_search:
@@ -1215,6 +1239,39 @@ class AIAnalyzer:
                 if not filtered:
                     assistant_msg.pop("tool_calls", None)
                 tool_calls = filtered
+
+            sig = self._tool_calls_signature(tool_calls)
+            if sig and sig == self._last_tool_calls_sig:
+                self._repeat_same_tool_calls += 1
+            else:
+                self._repeat_same_tool_calls = 0
+                self._last_tool_calls_sig = sig
+            if (
+                    self._repeat_same_tool_calls >= 4
+                    and isinstance(tool_calls, list)
+                    and tool_calls
+                    and all(
+                isinstance(tc, dict)
+                and isinstance(tc.get("function"), dict)
+                and str(tc["function"].get("name", "") or "").strip() == "r2_open_file"
+                for tc in tool_calls
+            )
+            ):
+                fp = str(getattr(self, "last_r2_file_path", "") or "").strip()
+                sid = str(getattr(self, "last_good_session_id", "") or "").strip()
+                text = (
+                        "检测到模型重复调用 r2_open_file（疑似陷入循环），已自动停止本轮以避免无意义重试。\n"
+                        "建议：\n"
+                        + (f"- 如你要继续分析，请直接使用已有 session_id：{sid}\n" if sid else "")
+                        + (
+                            f"- 如 session 仍无效，请手动执行：call r2_open_file {{\"file_path\":\"{fp}\",\"auto_analyze\":false}}\n"
+                            if fp else "- 请先确认要打开的文件路径（/storage/...），再执行 r2_open_file。\n")
+                        + "- 然后再执行 r2_disassemble/r2_run_command 等后续步骤。\n"
+                )
+                if debug_enabled():
+                    debug_log("stop_repeat_tool_calls", {"trace_id": trace_id, "turn_id": turn_id, "sig": sig[:400]})
+                print_info(text)
+                return text
             if not tool_calls:
                 dsml_src = (
                         str(assistant_msg.get("_raw_content", "") or "")
@@ -1455,7 +1512,19 @@ class AIAnalyzer:
                             str(args.get("content", "")),
                         )
                     else:
-                        result = bridge.call_tool(tool_name, args)
+                        if tool_name == "r2_open_file" and isinstance(args, dict):
+                            fp0 = str(args.get("file_path", "") or "").strip()
+                            aa0 = args.get("auto_analyze")
+                            cache_key = json.dumps({"file_path": fp0, "auto_analyze": aa0}, ensure_ascii=False,
+                                                   sort_keys=True)
+                            cached = self._r2_open_file_cache.get(cache_key)
+                            if isinstance(cached, dict) and (not cached.get("error")) and extract_session_ids(cached):
+                                result = dict(cached)
+                                result["cached"] = True
+                            else:
+                                result = bridge.call_tool(tool_name, args)
+                        else:
+                            result = bridge.call_tool(tool_name, args)
                 except KeyboardInterrupt as exc:
                     raise UserInterruptError("用户中断了当前工具执行") from exc
                 except (requests.RequestException, JsonRpcError, ValueError, OSError) as exc:
@@ -1524,6 +1593,18 @@ class AIAnalyzer:
                         fp = str(args.get("file_path", "") or "").strip()
                         if fp:
                             self.last_r2_file_path = fp
+                    except (TypeError, ValueError, AttributeError):
+                        pass
+                    try:
+                        if isinstance(result, dict) and (not result.get("error")):
+                            fp0 = str(args.get("file_path", "") or "").strip()
+                            aa0 = args.get("auto_analyze")
+                            cache_key = json.dumps({"file_path": fp0, "auto_analyze": aa0}, ensure_ascii=False,
+                                                   sort_keys=True)
+                            self._r2_open_file_cache[cache_key] = dict(result)
+                            sids = sorted(list(extract_session_ids(result)))
+                            if sids:
+                                self.last_good_session_id = sids[-1]
                     except (TypeError, ValueError, AttributeError):
                         pass
                 tool_content = json.dumps(result, ensure_ascii=False)
