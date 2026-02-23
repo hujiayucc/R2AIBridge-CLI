@@ -167,12 +167,6 @@ class AIAnalyzer:
             debug_log("web_search_enabled", {"base_url": self.base_url})
 
     def _maybe_enable_deepseek_thinking(self, req: Dict[str, Any]) -> None:
-        """
-        DeepSeek 思考模式：通过 extra_body.thinking 启用（适用于 deepseek-chat 等模型）。
-
-        参考文档：
-        - https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
-        """
         if not self.enable_thinking:
             return
         base = (self.base_url or "").strip().lower()
@@ -237,7 +231,9 @@ class AIAnalyzer:
             "你每一轮只能以两种方式结束：\n"
             "\n"
             "A) 继续取证（推荐）\n"
-            "- 你必须输出 tool_calls（1~3 个），并且每个 tool_call 前在文字中用一句话说明“目的/期待证据”。\n"
+            "- 默认每轮只输出 1 个 tool_call（最小化、可控、可回放）。只有当后续步骤强依赖且彼此独立时，才允许一次输出 2~3 个。\n"
+            "- 你必须输出标准 tool_calls，并且每个 tool_call 前用一句话说明“目的/期待证据”。\n"
+            "- 只要你输出了 tool_calls：本轮就必须立刻停止，不要输出最终结论/Markdown/长篇解释（等待工具返回后再继续）。\n"
             "- 不允许只说“下一步我将…/继续搜索…/尝试…”，但不发 tool_calls。\n"
             "\n"
             "B) 最终结论（仅在证据充分时）\n"
@@ -249,11 +245,19 @@ class AIAnalyzer:
             "只要还需要更多证据，就必须走 A，不允许输出半成品结论。\n"
             "\n"
             "========================\n"
+            "1.1) tool_calls 协议（强制）\n"
+            "========================\n"
+            "- 只在确实需要执行工具时才输出 tool_calls；否则直接走最终结论 Markdown。\n"
+            "- tool_calls 必须是结构化调用（不能用文本伪造/DSML/代码块模拟）。\n"
+            "- 发出 tool_calls 后，必须等待 tool 消息（tool_call_id 对应每个 tool_call.id）返回，再基于证据继续。\n"
+            "- 不要输出“我已经调用了工具并得到结果...”之类伪造证据；工具结果只来源于 tool 消息。\n"
+            "\n"
+            "========================\n"
             "2) 核心状态机（强制执行）\n"
             "========================\n"
             "循环执行直到满足“最终结论”：\n"
             "1) 明确子目标：把用户任务拆成 1~3 个可验证子目标（每个子目标都能用工具得到证据）。\n"
-            "2) 选择最小工具链：每轮最多 1~3 个工具调用，拿到关键证据。\n"
+            "2) 选择最小工具链：默认每轮 1 个工具调用，拿到关键证据（必要时才 2~3 个）。\n"
             "3) 解释证据：用 2~6 行解释“这条输出意味着什么”，并明确下一步要用哪个工具继续取证。\n"
             "4) 记录成果：确认函数用途→`rename_function`；关键结论/密钥/结构体→`add_knowledge_note`。\n"
             "5) 结束条件：只有能写最终 Markdown 时才能停。\n"
@@ -309,6 +313,7 @@ class AIAnalyzer:
             "========================\n"
             "- 允许直接输出回答（例如工具清单/概念解释/步骤说明）。\n"
             "- 只有当需要真实取证/执行命令时，才输出 tool_calls。\n"
+            "- 一旦输出 tool_calls：默认每轮只发 1 个；本轮不要夹带最终结论/长篇解释；等待工具返回后再继续。\n"
             "- 若用户明确要求“最终报告”，再输出 Markdown（可包含：## 关键发现/## 证据来源/## 下一步建议）。\n"
         )
 
@@ -563,13 +568,6 @@ class AIAnalyzer:
                     item["function"]["arguments"] += fn.arguments
 
     def _sanitize_messages_for_tools(self) -> None:
-        """
-        保证发送给 API 的 messages 满足 tool_calls 协议：
-        - tool 消息必须紧跟在触发它的 assistant(tool_calls) 后
-        - assistant.tool_calls 里的每个 id 必须有对应 tool(tool_call_id=id)
-
-        这一步是“协议级兜底”，用于修复：中断/裁剪/异常导致的 tool_calls/tool 不配对，避免 400。
-        """
         src = [m for m in self.messages if isinstance(m, dict)]
         cleaned: List[ChatCompletionMessageParam] = []
         i = 0
@@ -577,13 +575,11 @@ class AIAnalyzer:
             msg = src[i]
             role = str(msg.get("role", "") or "")
             if role != "assistant":
-                # tool 不能独立存在（必须跟随 assistant.tool_calls）；孤儿 tool 丢弃
                 if role != "tool":
                     cleaned.append(as_msg(msg))
                 i += 1
                 continue
 
-            # assistant
             tcs_raw = msg.get("tool_calls")
             if not (isinstance(tcs_raw, list) and tcs_raw):
                 cleaned.append(as_msg(msg))
