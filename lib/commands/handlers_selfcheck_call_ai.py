@@ -264,10 +264,10 @@ def _run_ai_question(ctx: CommandContext, question: str, *, mode: str = "loose")
         pass
     if ctx.active_session_id:
         prompt = (
-            f"[状态] 当前已存在可用 r2 session_id={ctx.active_session_id}（来自手动 call）。\n"
-            f"- 需要 r2_* 工具时请直接使用该 session_id。\n"
-            f"- 只有当工具返回 Invalid session_id/session invalid 时，才允许 r2_open_file 重新获取新 session。\n\n"
-            + prompt
+                f"[状态] 当前已存在可用 r2 session_id={ctx.active_session_id}（来自手动 call）。\n"
+                f"- 需要 r2_* 工具时请直接使用该 session_id。\n"
+                f"- 只有当工具返回 Invalid session_id/session invalid 时，才允许 r2_open_file 重新获取新 session。\n\n"
+                + prompt
         )
     try:
         result = ctx.analyzer.chat(prompt, ctx.bridge, mode=mode)
@@ -284,6 +284,45 @@ def _run_ai_question(ctx: CommandContext, question: str, *, mode: str = "loose")
     except (TypeError, ValueError, AttributeError):
         ctx.last_ai_trace_id = ""
     return result
+
+
+def ai_message(ctx, question: str, *, mode: str = "loose"):
+    result = _run_ai_question(ctx, question, mode=mode)
+    while True:
+        if result == "已中断当前 AI 思考。":
+            print_info("[提示] 已中断当前 AI 思考。")
+            break
+        save_choice = input("是否将本次最终结果写入知识库？(y/N): ").strip().lower()
+        if save_choice == "y":
+            dsml_found = contains_dsml_markup(result)
+            if str(result or "").strip() in {"本轮分析结束。", "(模型未返回文本)"}:
+                print_info("[知识库] 已跳过写入（原因：结果为占位文本，和最终输出不一致风险高）。")
+                dsml_found = True
+            force = "n"
+            if dsml_found:
+                force = input(
+                    "检测到内容包含 DSML/协议片段，默认不写入知识库。是否仍强制写入？(y/N): "
+                ).strip().lower()
+                if force != "y":
+                    print_info("[知识库] 已跳过写入（原因：检测到 DSML 内容）。")
+                else:
+                    print_info("[知识库] 警告：仍将写入包含 DSML 的内容（不推荐）。")
+            item = build_kb_item(question, result)
+            if (not dsml_found) or (force == "y"):
+                append_kb_item(KB_SAVE_PATH, item)
+                ctx.kb_items.append(item)
+                print_info(f"[知识库] 已写入: {KB_SAVE_PATH}")
+
+        cont_choice = input("是否继续上一轮 AI 分析？(y/N): ").strip().lower()
+        if cont_choice == "y":
+            result = _run_ai_question(
+                ctx,
+                "继续上一轮未完成的分析：从你最后一步开始推进，必须使用 tool_calls 执行需要的操作；"
+                "直到输出最终 Markdown（## 关键发现/## 证据来源/## 下一步建议）才停止。",
+                mode="strict",
+            )
+        else:
+            break
 
 
 def handle_ai(raw: str, ctx: CommandContext) -> bool:
@@ -328,46 +367,19 @@ def handle_ai(raw: str, ctx: CommandContext) -> bool:
     if ":\\" in question:
         print("[提示] 你输入的是 Windows 路径。R2 服务通常运行在 Android/Termux 端，请改用 /storage/... 绝对路径。")
     try:
-        result = _run_ai_question(ctx, question, mode=mode)
-        while True:
-            if result == "已中断当前 AI 思考。":
-                print_info("[提示] 已中断当前 AI 思考。")
-                break
-            save_choice = input("是否将本次最终结果写入知识库？(y/N): ").strip().lower()
-            if save_choice == "y":
-                dsml_found = contains_dsml_markup(result)
-                if str(result or "").strip() in {"本轮分析结束。", "(模型未返回文本)"}:
-                    print_info("[知识库] 已跳过写入（原因：结果为占位文本，和最终输出不一致风险高）。")
-                    dsml_found = True
-                force = "n"
-                if dsml_found:
-                    force = input(
-                        "检测到内容包含 DSML/协议片段，默认不写入知识库。是否仍强制写入？(y/N): "
-                    ).strip().lower()
-                    if force != "y":
-                        print_info("[知识库] 已跳过写入（原因：检测到 DSML 内容）。")
-                    else:
-                        print_info("[知识库] 警告：仍将写入包含 DSML 的内容（不推荐）。")
-                item = build_kb_item(question, result)
-                if (not dsml_found) or (force == "y"):
-                    append_kb_item(KB_SAVE_PATH, item)
-                    ctx.kb_items.append(item)
-                    print_info(f"[知识库] 已写入: {KB_SAVE_PATH}")
-
-            cont_choice = input("是否继续上一轮 AI 分析？(y/N): ").strip().lower()
-            if cont_choice == "y":
-                result = _run_ai_question(
-                    ctx,
-                    "继续上一轮未完成的分析：从你最后一步开始推进，必须使用 tool_calls 执行需要的操作；"
-                    "直到输出最终 Markdown（## 关键发现/## 证据来源/## 下一步建议）才停止。",
-                    mode="strict",
-                )
-            else:
-                break
+        ai_message(ctx, question, mode=mode)
     except KeyboardInterrupt:
         print_info("[提示] 已中断当前 AI 分析。")
     except (requests.RequestException, JsonRpcError, ValueError, TypeError, OSError, RuntimeError) as exc:
         print(f"[错误] AI 分析失败: {exc}")
+        cont_choice = input("是否继续上一轮 AI 分析？(y/N): ").strip().lower()
+        if cont_choice == "y":
+            ai_message(
+                ctx,
+                "继续上一轮未完成的分析：从你最后一步开始推进，必须使用 tool_calls 执行需要的操作；"
+                "直到输出最终 Markdown（## 关键发现/## 证据来源/## 下一步建议）才停止。",
+                mode="strict",
+            )
     return True
 
 
@@ -401,7 +413,7 @@ def handle_workflows(raw: str, ctx: CommandContext) -> bool:
             print_info("[apk_analyze] 2) 列出 APK 头部文件清单")
             _call_tool("termux_command", {"command": f"unzip -l \"{apk_path}\" | sed -n '1,80p'"})
 
-            tmp_dir = "$HOME/AI/tmp_apk"
+            tmp_dir = "/data/data/com.termux/files/home/AI/tmp_apk"
             print_info("[apk_analyze] 3) 解压 classes*.dex 到临时目录")
             out = _call_tool(
                 "termux_command",
