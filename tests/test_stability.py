@@ -160,6 +160,21 @@ class StabilityTests(unittest.TestCase):
         self.assertIn("tc1", ids)
         self.assertNotIn("tc2", ids)
 
+    def test_recoverable_guidance_mentions_last_r2_file_path(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        a = AIAnalyzer(
+            api_key="x",
+            model="m",
+            base_url="http://example.invalid",
+            tool_specs={},
+            client_override=self._DummyClient(),
+        )
+        a.last_r2_file_path = "/storage/emulated/0/a.so"
+        g = a._recoverable_guidance(["r2_disassemble: Invalid session_id: session_xxx"])
+        self.assertIn("r2_open_file", g)
+        self.assertIn("/storage/emulated/0/a.so", g)
+
     def test_recoverable_prompt_mentions_success_tools(self) -> None:
         from lib.analyzer import AIAnalyzer
 

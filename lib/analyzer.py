@@ -132,6 +132,7 @@ class AIAnalyzer:
         self.kb_path = kb_path
         self.session_ids: set[str] = set()
         self.last_trace_id = ""
+        self.last_r2_file_path = ""
         self.enable_search = bool(enable_search)
         self.enable_thinking = bool(enable_thinking)
         self.max_tool_result_chars = int(max_tool_result_chars)
@@ -153,6 +154,42 @@ class AIAnalyzer:
                 }
             )
         ]
+
+        try:
+            self.last_r2_file_path = self._infer_last_r2_file_path_from_history()
+        except (TypeError, ValueError, KeyError):
+            self.last_r2_file_path = ""
+
+    def _infer_last_r2_file_path_from_history(self) -> str:
+        for m in reversed(self.messages or []):
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("role", "") or "") != "assistant":
+                continue
+            tcs = m.get("tool_calls")
+            if not isinstance(tcs, list):
+                continue
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    continue
+                if str(fn.get("name", "") or "").strip() != "r2_open_file":
+                    continue
+                raw = fn.get("arguments")
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    args = json.loads(raw or "{}")
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                if not isinstance(args, dict):
+                    continue
+                fp = str(args.get("file_path", "") or "").strip()
+                if fp:
+                    return fp
+        return ""
 
     def _maybe_enable_web_search(self, req: Dict[str, Any]) -> None:
         if not self.enable_search:
@@ -368,6 +405,10 @@ class AIAnalyzer:
         summary_model = session_data.get("summary_model")
         if isinstance(summary_model, str) and summary_model.strip():
             self.summary_model = summary_model.strip()
+        try:
+            self.last_r2_file_path = self._infer_last_r2_file_path_from_history()
+        except (TypeError, ValueError, KeyError):
+            self.last_r2_file_path = ""
         return True
 
     def _trim_messages(self) -> None:
@@ -795,7 +836,15 @@ class AIAnalyzer:
             hints.append(
                 "权限问题：优先改用可读目录(/storage/emulated/0/... 或 $HOME)，必要时提示用户 termux-setup-storage/chmod。")
         if "session" in blob and re.search(r"(invalid|not found|closed|expired)", blob):
-            hints.append("session 无效：先重新 r2_open_file 获取新 session_id，再继续 r2_run_command/r2_analyze_target。")
+            fp = str(getattr(self, "last_r2_file_path", "") or "").strip()
+            if fp:
+                hints.append(
+                    "session 无效：必须先重新 r2_open_file 获取新 session_id，再继续 r2_* 工具。"
+                    f"建议先执行：r2_open_file {{\"file_path\":\"{fp}\",\"auto_analyze\":false}}"
+                )
+            else:
+                hints.append(
+                    "session 无效：先重新 r2_open_file 获取新 session_id，再继续 r2_run_command/r2_analyze_target。")
         if re.search(r"(timeout|timed out|connection|temporar|gateway|502|503|504)", blob):
             hints.append("网络/网关抖动：优先重试同一 tool_calls；必要时先 health，再继续 tools/call。")
         if re.search(r"(invalid json|json|decode)", blob) and "http" in blob:
@@ -1431,6 +1480,13 @@ class AIAnalyzer:
                         }
                 result = self._compact_tool_result(tool_name, result)
                 if isinstance(result, dict) and result.get("error"):
+                    try:
+                        err_txt = str(result.get("error", "") or "")
+                        err_low = err_txt.lower()
+                        if ("invalid session_id" in err_low) or ("session invalid" in err_low):
+                            result["recoverable"] = True
+                    except (TypeError, ValueError, AttributeError):
+                        pass
                     if result.get("recoverable"):
                         recoverable_errors.append(f"{tool_name}: {str(result.get('error'))[:160]}")
                     else:
@@ -1463,6 +1519,13 @@ class AIAnalyzer:
                         },
                     )
                 self.session_ids.update(extract_session_ids(result))
+                if tool_name == "r2_open_file" and isinstance(args, dict):
+                    try:
+                        fp = str(args.get("file_path", "") or "").strip()
+                        if fp:
+                            self.last_r2_file_path = fp
+                    except (TypeError, ValueError, AttributeError):
+                        pass
                 tool_content = json.dumps(result, ensure_ascii=False)
                 if len(tool_content) > self.max_tool_result_chars:
                     keep_head = int(self.max_tool_result_chars * 0.65)
