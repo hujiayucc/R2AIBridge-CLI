@@ -135,8 +135,8 @@ class AIAnalyzer:
         self.last_r2_file_path = ""
         self.last_good_session_id = ""
         self._r2_open_file_cache: Dict[str, Any] = {}
-        self._last_tool_calls_sig = ""
-        self._repeat_same_tool_calls = 0
+        self._last_executed_tool_calls_sig = ""
+        self._repeat_same_tool_calls_after_exec = 0
         self.enable_search = bool(enable_search)
         self.enable_thinking = bool(enable_thinking)
         self.max_tool_result_chars = int(max_tool_result_chars)
@@ -1248,39 +1248,6 @@ class AIAnalyzer:
                 if not filtered:
                     assistant_msg.pop("tool_calls", None)
                 tool_calls = filtered
-
-            sig = self._tool_calls_signature(tool_calls)
-            if sig and sig == self._last_tool_calls_sig:
-                self._repeat_same_tool_calls += 1
-            else:
-                self._repeat_same_tool_calls = 0
-                self._last_tool_calls_sig = sig
-            if (
-                    self._repeat_same_tool_calls >= 4
-                    and isinstance(tool_calls, list)
-                    and tool_calls
-                    and all(
-                isinstance(tc, dict)
-                and isinstance(tc.get("function"), dict)
-                and str(tc["function"].get("name", "") or "").strip() == "r2_open_file"
-                for tc in tool_calls
-            )
-            ):
-                fp = str(getattr(self, "last_r2_file_path", "") or "").strip()
-                sid = str(getattr(self, "last_good_session_id", "") or "").strip()
-                text = (
-                        "检测到模型重复调用 r2_open_file（疑似陷入循环），已自动停止本轮以避免无意义重试。\n"
-                        "建议：\n"
-                        + (f"- 如你要继续分析，请直接使用已有 session_id：{sid}\n" if sid else "")
-                        + (
-                            f"- 如 session 仍无效，请手动执行：call r2_open_file {{\"file_path\":\"{fp}\",\"auto_analyze\":false}}\n"
-                            if fp else "- 请先确认要打开的文件路径（/storage/...），再执行 r2_open_file。\n")
-                        + "- 然后再执行 r2_disassemble/r2_run_command 等后续步骤。\n"
-                )
-                if debug_enabled():
-                    debug_log("stop_repeat_tool_calls", {"trace_id": trace_id, "turn_id": turn_id, "sig": sig[:400]})
-                print_info(text)
-                return text
             if not tool_calls:
                 dsml_src = (
                         str(assistant_msg.get("_raw_content", "") or "")
@@ -1459,6 +1426,7 @@ class AIAnalyzer:
             missing_tool_retry = 0
             self.messages.append(as_msg(_to_history_msg(assistant_msg)))
             self._trim_messages()
+            tool_calls_sig_for_turn = self._tool_calls_signature(tool_calls)
             validation_errors: List[str] = []
             success_calls = 0
             recoverable_errors: List[str] = []
@@ -1574,7 +1542,8 @@ class AIAnalyzer:
                         err_low = err_txt.lower()
                         if ("invalid session_id" in err_low) or ("session invalid" in err_low):
                             result["recoverable"] = True
-                        if ("permission denied" in err_low) or ("operation not permitted" in err_low) or ("eacces" in err_low):
+                        if ("permission denied" in err_low) or ("operation not permitted" in err_low) or (
+                                "eacces" in err_low):
                             result["recoverable"] = True
                     except (TypeError, ValueError, AttributeError):
                         pass
@@ -1642,6 +1611,49 @@ class AIAnalyzer:
                     )
                 self.messages.append(as_msg({"role": "tool", "tool_call_id": tc["id"], "content": tool_content}))
                 self._trim_messages()
+
+            if (
+                    tool_calls_sig_for_turn
+                    and tool_calls_sig_for_turn == self._last_executed_tool_calls_sig
+                    and isinstance(tool_calls, list)
+                    and tool_calls
+                    and all(
+                isinstance(tc0, dict)
+                and isinstance(tc0.get("function"), dict)
+                and str(tc0["function"].get("name", "") or "").strip() == "r2_open_file"
+                for tc0 in tool_calls
+            )
+            ):
+                self._repeat_same_tool_calls_after_exec += 1
+            else:
+                self._repeat_same_tool_calls_after_exec = 0
+                self._last_executed_tool_calls_sig = tool_calls_sig_for_turn
+
+            if self._repeat_same_tool_calls_after_exec >= 1:
+                sid = str(getattr(self, "last_good_session_id", "") or "").strip()
+                fp = str(getattr(self, "last_r2_file_path", "") or "").strip()
+                if sid:
+                    self.messages.append(as_msg({
+                        "role": "user",
+                        "content": (
+                            f"你刚刚已经成功 r2_open_file 并获得 session_id={sid}。\n"
+                            "禁止再次调用 r2_open_file（这会导致无意义循环）。\n"
+                            "请直接使用该 session_id 继续下一步取证（例如 r2_run_command: i / iz / afl）。\n"
+                            "要求：只输出标准 tool_calls，不要输出最终 Markdown。"
+                        ),
+                    }))
+                elif fp:
+                    self.messages.append(as_msg({
+                        "role": "user",
+                        "content": (
+                            f"你已经多次重复 r2_open_file（疑似陷入循环）。file_path={fp}\n"
+                            "请不要再重复 r2_open_file；请改为使用拿到的 session_id 继续下一步，"
+                            "或在下一轮明确说明你为什么必须再次 open_file。\n"
+                            "要求：只输出标准 tool_calls，不要输出最终 Markdown。"
+                        ),
+                    }))
+                self._trim_messages()
+                continue
 
             if (
                     recoverable_errors
