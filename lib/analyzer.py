@@ -215,6 +215,15 @@ class AIAnalyzer:
             parts.append(name + ":" + args_txt)
         return "|".join(parts)
 
+    @staticmethod
+    def _rewrite_termux_sandbox_paths(cmd: str) -> str:
+        s = str(cmd or "")
+        try:
+            s = re.sub(r"/data/data/com\.termux/AI\b", "/data/data/com.termux/files/home/AI", s)
+            return re.sub(r"/data/data/com\.termux(?!/files)", "/data/data/com.termux/files/home/AI", s)
+        except re.error:
+            return s
+
     def _maybe_enable_web_search(self, req: Dict[str, Any]) -> None:
         if not self.enable_search:
             return
@@ -263,7 +272,7 @@ class AIAnalyzer:
             "- Android/Termux 路径（例如 `/storage/...`、`/data/...`）的操作必须通过 MCP 工具执行：`termux_command` / `r2_*` / `os_*` / `sqlite_query` / `read_logcat`。\n"
             "- 不要输出 “r2>” 之类提示符；不要把交互当成输出的一部分。\n"
             "- Termux 是沙箱环境：禁止尝试创建/修改 `/data/data/com.termux` 根目录（例如 `mkdir /data/data/com.termux` 常见会 Permission denied）。\n"
-            "- 需要创建文件/目录/脚本时：一律在已存在目录 `/data/data/com.termux/AI` 下操作；`termux_save_script` 保存的脚本也位于该目录。\n"
+            "- 需要创建文件/目录/脚本时：一律在已存在目录 `/data/data/com.termux/files/home/AI` 下操作；`termux_save_script` 保存的脚本也位于该目录。\n"
             "- 若需要使用外部存储路径：使用 `/storage/emulated/0/...`，并在必要时提示用户先执行 `termux-setup-storage` 授权。\n"
             "\n"
             "0.4 DSML 禁止\n"
@@ -359,7 +368,7 @@ class AIAnalyzer:
             "0.3 运行路径/环境\n"
             "- Android/Termux 路径（例如 `/storage/...`、`/data/...`）的操作必须通过 MCP 工具执行：`termux_command` / `r2_*` / `os_*` / `sqlite_query` / `read_logcat`。\n"
             "- 不要输出 “r2>” 之类提示符；不要把交互当成输出的一部分。\n"
-            "- Termux 是沙箱环境：不要尝试创建/修改 `/data/data/com.termux` 根目录；需要落盘/脚本请使用 `/data/data/com.termux/AI`（已存在，且 `termux_save_script` 的脚本也在此）。\n"
+            "- Termux 是沙箱环境：不要尝试创建/修改 `/data/data/com.termux` 根目录；需要落盘/脚本请使用 `/data/data/com.termux/files/home/AI`（已存在，且 `termux_save_script` 的脚本也在此）。\n"
             "- 若使用 `/storage/emulated/0/...` 需要存储权限时，提醒用户先 `termux-setup-storage`。\n"
             "\n"
             "0.4 DSML 禁止\n"
@@ -1481,6 +1490,17 @@ class AIAnalyzer:
                     cmd = ""
                     if isinstance(args, dict):
                         cmd = str(args.get("command") or args.get("cmd") or args.get("shell") or "")
+                        cmd2 = self._rewrite_termux_sandbox_paths(cmd)
+                        if cmd2 != cmd:
+                            if debug_enabled():
+                                debug_log("termux_cmd_rewrite", {"from": cmd[:200], "to": cmd2[:200]})
+                            cmd = cmd2
+                            if "command" in args:
+                                args["command"] = cmd
+                            elif "cmd" in args:
+                                args["cmd"] = cmd
+                            elif "shell" in args:
+                                args["shell"] = cmd
                     is_danger, reason = self._dangerous_action_for_termux_command(cmd)
                     if is_danger:
                         print_info(f"[提示] 检测到危险命令（{reason}）: {cmd}")
@@ -1553,6 +1573,8 @@ class AIAnalyzer:
                         err_txt = str(result.get("error", "") or "")
                         err_low = err_txt.lower()
                         if ("invalid session_id" in err_low) or ("session invalid" in err_low):
+                            result["recoverable"] = True
+                        if ("permission denied" in err_low) or ("operation not permitted" in err_low) or ("eacces" in err_low):
                             result["recoverable"] = True
                     except (TypeError, ValueError, AttributeError):
                         pass

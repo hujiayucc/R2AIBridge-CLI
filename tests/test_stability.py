@@ -175,6 +175,23 @@ class StabilityTests(unittest.TestCase):
         self.assertIn("r2_open_file", g)
         self.assertIn("/storage/emulated/0/a.so", g)
 
+    def test_rewrite_termux_sandbox_paths(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        self.assertEqual(
+            AIAnalyzer._rewrite_termux_sandbox_paths("mkdir -p /data/data/com.termux/tmp"),
+            "mkdir -p /data/data/com.termux/files/home/AI/tmp",
+        )
+        self.assertEqual(
+            AIAnalyzer._rewrite_termux_sandbox_paths("mkdir -p /data/data/com.termux/AI/tmp"),
+            "mkdir -p /data/data/com.termux/files/home/AI/tmp",
+        )
+        # termux 内部可用路径不应被改写
+        self.assertEqual(
+            AIAnalyzer._rewrite_termux_sandbox_paths("cd /data/data/com.termux/files/home && ls"),
+            "cd /data/data/com.termux/files/home && ls",
+        )
+
     def test_recoverable_prompt_mentions_success_tools(self) -> None:
         from lib.analyzer import AIAnalyzer
 
