@@ -288,7 +288,7 @@ def main() -> None:
             max_context_chars = int(
                 input(f"对话上下文最大字符预算（默认 {saved['MAX_CONTEXT_CHARS']}）: ").strip() or saved[
                     "MAX_CONTEXT_CHARS"])
-            if is_dashscope:
+            if is_dashscope and AIAnalyzer._model_supports_enable_search(ai_model):
                 dflt = "y" if bool(saved.get("AI_ENABLE_SEARCH", False)) else "n"
                 choice = input(
                     f"启用 AI 联网搜索（DashScope enable_search；默认 {dflt}）(y/N): ").strip().lower()
@@ -303,8 +303,7 @@ def main() -> None:
                     f"启用 DeepSeek 思考模式（extra_body.thinking；默认 {dflt}）(y/N): ").strip().lower()
                 ai_enable_thinking = choice in {"y", "yes", "1", "true", "on"}
                 ai_thinking_budget = 0
-            elif is_dashscope:
-                # DashScope 深度思考：enable_thinking / thinking_budget（通过 extra_body 注入）
+            elif is_dashscope and AIAnalyzer._model_supports_enable_thinking(ai_model):
                 dflt = "y" if bool(saved.get("AI_ENABLE_THINKING", False)) else "n"
                 choice = input(
                     f"启用深度思考（DashScope enable_thinking；默认 {dflt}）(y/N): ").strip().lower()
@@ -339,7 +338,11 @@ def main() -> None:
     model_lower2 = str(ai_model or "").strip().lower()
     if ai_enable_search and (not is_dashscope2):
         ai_enable_search = False
+    if ai_enable_search and is_dashscope2 and (not AIAnalyzer._model_supports_enable_search(ai_model)):
+        ai_enable_search = False
     if ai_enable_thinking and (not (is_deepseek2 or is_dashscope2)):
+        ai_enable_thinking = False
+    if ai_enable_thinking and is_dashscope2 and (not AIAnalyzer._model_supports_enable_thinking(ai_model)):
         ai_enable_thinking = False
     if ai_enable_thinking and is_deepseek2 and (model_lower2 == "deepseek-reasoner"):
         ai_enable_thinking = False

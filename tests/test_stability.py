@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -213,6 +214,69 @@ class StabilityTests(unittest.TestCase):
         self.assertEqual(eb.get("enable_search"), True)
         self.assertEqual(eb.get("enable_thinking"), True)
         self.assertEqual(eb.get("thinking_budget"), 50)
+
+    def test_parse_json_tool_calls(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        text = '''
+思考：需要先打开文件
+```
+{"name": "r2_open_file", "arguments": {"file_path": "/path/to/a.so"}}
+{"name": "termux_command", "arguments": {"command": "ls -la"}}
+```
+'''
+        calls = AIAnalyzer._parse_json_tool_calls(text)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["function"]["name"], "r2_open_file")
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"file_path": "/path/to/a.so"})
+        self.assertEqual(calls[1]["function"]["name"], "termux_command")
+
+    def test_model_supports_enable_search_and_thinking(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        self.assertTrue(AIAnalyzer._model_supports_enable_search("qwen-plus"))
+        self.assertTrue(AIAnalyzer._model_supports_enable_search("deepseek-r1"))
+        self.assertFalse(AIAnalyzer._model_supports_enable_search("deepseek-r1-distill-llama-8b"))
+        self.assertFalse(AIAnalyzer._model_supports_enable_thinking("deepseek-r1-distill-llama-8b"))
+        self.assertTrue(AIAnalyzer._model_supports_enable_thinking("qwen-plus"))
+        self.assertTrue(AIAnalyzer._model_supports_enable_thinking("deepseek-v3.2"))
+
+    def test_use_text_tool_mode_dashscope_distill(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        a = AIAnalyzer(
+            api_key="x",
+            model="deepseek-r1-distill-llama-8b",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            tool_specs={},
+            client_override=self._DummyClient(),
+        )
+        self.assertTrue(a._use_text_tool_mode())
+        b = AIAnalyzer(
+            api_key="x",
+            model="qwen-plus",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            tool_specs={},
+            client_override=self._DummyClient(),
+        )
+        self.assertFalse(b._use_text_tool_mode())
+
+    def test_deepseek_distill_skips_thinking_when_tools(self) -> None:
+        from lib.analyzer import AIAnalyzer
+
+        a = AIAnalyzer(
+            api_key="x",
+            model="deepseek-r1-distill-llama-8b",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            tool_specs={"t": {"properties": {}, "required": []}},
+            client_override=self._DummyClient(),
+            enable_thinking=True,
+            thinking_budget=50,
+        )
+        req: dict = {}
+        a._maybe_enable_dashscope_deep_thinking(req, tool_choice="auto")
+        eb = req.get("extra_body")
+        self.assertIsNone(eb)
 
     def test_trim_never_leaves_orphan_assistant_with_tool_calls(self) -> None:
         """裁剪后不得留下孤立的 assistant(tool_calls)，否则会触发 Invalid consecutive assistant message"""

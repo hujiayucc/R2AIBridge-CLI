@@ -237,6 +237,12 @@ def handle_config(raw: str, ctx: CommandContext) -> bool:
                     print_info(f"[配置] 已热更新 AI_ENABLE_SEARCH: {ctx.analyzer.enable_search}")
                 except (TypeError, ValueError, AttributeError):
                     print_info("[配置] AI_ENABLE_SEARCH 热更新失败（建议 ai_reload 或重启）")
+            if bool(new_val):
+                from lib.analyzer import AIAnalyzer
+                base = str(ctx.current_config.get("AI_BASE_URL", "") or "").strip().lower()
+                model = str(ctx.current_config.get("AI_MODEL", "") or "").strip()
+                if "dashscope.aliyuncs.com" in base and not AIAnalyzer._model_supports_enable_search(model):
+                    print_info("[配置] 当前模型不支持 enable_search，该配置不会生效。")
         elif key == "AI_ENABLE_THINKING":
             if ctx.analyzer is not None:
                 try:
@@ -244,6 +250,12 @@ def handle_config(raw: str, ctx: CommandContext) -> bool:
                     print_info(f"[配置] 已热更新 AI_ENABLE_THINKING: {ctx.analyzer.enable_thinking}")
                 except (TypeError, ValueError, AttributeError):
                     print_info("[配置] AI_ENABLE_THINKING 热更新失败（建议 ai_reload 或重启）")
+            if bool(new_val):
+                from lib.analyzer import AIAnalyzer
+                base = str(ctx.current_config.get("AI_BASE_URL", "") or "").strip().lower()
+                model = str(ctx.current_config.get("AI_MODEL", "") or "").strip()
+                if "dashscope.aliyuncs.com" in base and not AIAnalyzer._model_supports_enable_thinking(model):
+                    print_info("[配置] 当前模型不支持 enable_thinking，该配置不会生效。")
         elif key == "AI_THINKING_BUDGET":
             if ctx.analyzer is not None:
                 try:

@@ -20,6 +20,27 @@ from lib.termux import termux_save_script_wrapper
 from lib.ui_core import UserInterruptError, print_info, print_markdown
 
 
+def _is_no_retry_error(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    if (
+            "402" in s
+            or "insufficient balance" in s
+            or "余额不足" in s
+            or "payment required" in s
+    ):
+        return True
+    if (
+            "404" in s
+            or "model_not_found" in s
+            or "does not exist" in s
+            or "you do not have access" in s
+    ):
+        return True
+    if "tool call" in s and ("not supported" in s or "unsupported" in s):
+        return True
+    return False
+
+
 def _render_tools_markdown(tool_specs: object) -> str:
     if not isinstance(tool_specs, dict) or not tool_specs:
         return "## 可用工具\n\n（当前未加载 tools/list schema，工具列表为空）\n"
@@ -372,14 +393,26 @@ def handle_ai(raw: str, ctx: CommandContext) -> bool:
         print_info("[提示] 已中断当前 AI 分析。")
     except (requests.RequestException, JsonRpcError, ValueError, TypeError, OSError, RuntimeError) as exc:
         print(f"[错误] AI 分析失败: {exc}")
-        cont_choice = input("是否继续上一轮 AI 分析？(y/N): ").strip().lower()
-        if cont_choice == "y":
-            ai_message(
-                ctx,
-                "继续上一轮未完成的分析：从你最后一步开始推进，必须使用 tool_calls 执行需要的操作；"
-                "直到输出最终 Markdown（## 关键发现/## 证据来源/## 下一步建议）才停止。",
-                mode="strict",
-            )
+        if _is_no_retry_error(exc):
+            s = str(exc).lower()
+            if "402" in s or "insufficient balance" in s or "余额不足" in s:
+                print_info("[提示] 402 余额不足：请先为 API 账户充值后再试。")
+            elif "404" in s or "model_not_found" in s or "does not exist" in s:
+                print_info(
+                    "[提示] 模型不存在或无权访问：请检查 config 中 AI_MODEL 是否与 Base URL 匹配"
+                    "（如 DashScope 用 qwen-plus/qwen-turbo，DeepSeek 用 deepseek-chat/deepseek-reasoner）。"
+                )
+            elif "tool call" in s and ("not supported" in s or "unsupported" in s):
+                print_info(
+                    "[提示] DashScope compatible-mode 下当前模型不支持 tools："
+                    "请改用 qwen-plus 或 qwen-turbo（config set AI_MODEL qwen-plus 后 ai_reload）。"
+                )
+            else:
+                print_info("[提示] 该错误重试无法解决，请修正配置后重试。")
+        else:
+            cont_choice = input("是否继续上一轮 AI 分析？(y/N): ").strip().lower()
+            if cont_choice == "y":
+                handle_ai(raw, ctx)
     return True
 
 

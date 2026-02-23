@@ -22,6 +22,28 @@ def as_msg(value: Dict[str, Any]) -> ChatCompletionMessageParam:
     return cast(ChatCompletionMessageParam, cast(object, value))
 
 
+_DASHSCOPE_ENABLE_SEARCH_PREFIXES = (
+    "qwen3-max", "qwen3-max-preview", "qwen-max", "qwen3.5-plus", "qwen-plus", "qwen-flash", "qwen-turbo",
+    "qwq-plus", "deepseek-v3.2", "deepseek-v3.1", "deepseek-v3", "deepseek-r1-0528", "deepseek-r1",
+    "moonshot-kimi-k2", "minimax-m2.1",
+)
+
+_DASHSCOPE_THINKING_MIXED_PREFIXES = (
+    "qwen3.5-plus", "qwen3-max", "qwen-plus", "qwen-flash", "qwen-turbo",
+    "qwen3-235b", "qwen3-32b", "qwen3-30b", "qwen3-14b", "qwen3-8b", "qwen3-4b", "qwen3-1.7b", "qwen3-0.6b",
+    "deepseek-v3.2", "deepseek-v3.1", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5",
+)
+
+_DASHSCOPE_THINKING_ONLY_PREFIXES = (
+    "deepseek-r1", "qwq-plus", "qwq-32b", "kimi-k2-thinking",
+    "qwen3-next-80b-a3b-thinking", "qwen3-235b-a22b-thinking", "qwen3-30b-a3b-thinking",
+)
+
+_DASHSCOPE_ENABLE_SEARCH_EXCLUDE = (
+    "deepseek-r1-distill",
+)
+
+
 def extract_session_ids(obj: Any) -> set[str]:
     found: set[str] = set()
     if isinstance(obj, dict):
@@ -199,9 +221,6 @@ class AIAnalyzer:
 
     @staticmethod
     def _tool_calls_signature(tool_calls: Any) -> str:
-        """
-        用于检测“模型重复刷同一组 tool_calls”的兜底签名（尽量稳定、与 tool_call_id 无关）。
-        """
         if not isinstance(tool_calls, list):
             return ""
         parts: List[str] = []
@@ -226,7 +245,29 @@ class AIAnalyzer:
         except re.error:
             return s
 
-    def _maybe_enable_web_search(self, req: Dict[str, Any]) -> None:
+    @staticmethod
+    def _model_supports_enable_search(model: str) -> bool:
+        m = str(model or "").strip().lower()
+        for ex in _DASHSCOPE_ENABLE_SEARCH_EXCLUDE:
+            if ex in m:
+                return False
+        for p in _DASHSCOPE_ENABLE_SEARCH_PREFIXES:
+            if m.startswith(p) or p in m:
+                return True
+        return False
+
+    @staticmethod
+    def _model_supports_enable_thinking(model: str) -> bool:
+        m = str(model or "").strip().lower()
+        for p in _DASHSCOPE_THINKING_ONLY_PREFIXES:
+            if m.startswith(p) or p in m:
+                return False
+        for p in _DASHSCOPE_THINKING_MIXED_PREFIXES:
+            if m.startswith(p) or p in m:
+                return True
+        return False
+
+    def _maybe_enable_web_search(self, req: Dict[str, Any], tool_choice: str = "auto") -> None:
         if not self.enable_search:
             return
         base = (self.base_url or "").strip().lower()
@@ -234,32 +275,34 @@ class AIAnalyzer:
             if debug_enabled():
                 debug_log("web_search_skipped", {"reason": "base_url_not_dashscope", "base_url": self.base_url})
             return
+        if not self._model_supports_enable_search(self.model or ""):
+            if debug_enabled():
+                debug_log("web_search_skipped", {"reason": "model_not_supported", "model": self.model})
+            return
         self._merge_extra_body(req, {"enable_search": True})
         if debug_enabled():
             debug_log("web_search_enabled", {"base_url": self.base_url})
 
-    def _maybe_enable_dashscope_deep_thinking(self, req: Dict[str, Any]) -> None:
-        """
-        DashScope(OpenAI 兼容) 深度思考：
-        - extra_body.enable_thinking=true
-        - 可选 extra_body.thinking_budget
-
-        参考文档：
-        - https://help.aliyun.com/zh/model-studio/deep-thinking
-        """
+    def _maybe_enable_dashscope_deep_thinking(self, req: Dict[str, Any], tool_choice: str = "auto") -> None:
         if not self.enable_thinking:
             return
         base = (self.base_url or "").strip().lower()
         if "dashscope.aliyuncs.com" not in base:
+            return
+        if not self._model_supports_enable_thinking(self.model or ""):
+            if debug_enabled():
+                debug_log("dashscope_thinking_skipped",
+                          {"reason": "model_not_supported_or_thinking_only", "model": self.model})
             return
         extra: Dict[str, Any] = {"enable_thinking": True}
         if isinstance(self.thinking_budget, int) and self.thinking_budget > 0:
             extra["thinking_budget"] = int(self.thinking_budget)
         self._merge_extra_body(req, extra)
         if debug_enabled():
-            debug_log("dashscope_thinking_enabled", {"base_url": self.base_url, "thinking_budget": self.thinking_budget})
+            debug_log("dashscope_thinking_enabled",
+                      {"base_url": self.base_url, "thinking_budget": self.thinking_budget})
 
-    def _maybe_enable_deepseek_thinking(self, req: Dict[str, Any]) -> None:
+    def _maybe_enable_deepseek_thinking(self, req: Dict[str, Any], tool_choice: str = "auto") -> None:
         if not self.enable_thinking:
             return
         base = (self.base_url or "").strip().lower()
@@ -455,12 +498,6 @@ class AIAnalyzer:
             if not isinstance(msg, dict):
                 return False
         self.messages = [as_msg(msg) for msg in raw]
-        model = session_data.get("model")
-        if isinstance(model, str) and model.strip():
-            self.model = model.strip()
-        summary_model = session_data.get("summary_model")
-        if isinstance(summary_model, str) and summary_model.strip():
-            self.summary_model = summary_model.strip()
         try:
             self.last_r2_file_path = self._infer_last_r2_file_path_from_history()
         except (TypeError, ValueError, KeyError):
@@ -470,6 +507,7 @@ class AIAnalyzer:
     def _trim_messages(self) -> None:
         before = self._messages_stats(self.messages) if debug_enabled() else None
         try:
+            self._sanitize_messages_for_text_tool_mode()
             self._sanitize_messages_for_tools()
         except (TypeError, ValueError, KeyError) as exc:
             if debug_enabled():
@@ -586,6 +624,80 @@ class AIAnalyzer:
                 or (re.search(r"<[|｜]DSML[|｜](invoke|parameter)\b", t, flags=re.IGNORECASE) is not None)
         )
 
+    def _use_text_tool_mode(self) -> bool:
+        """DashScope 上 deepseek-r1-distill-llama-8b 等模型不支持原生 tools，改用解析文本输出"""
+        base = (self.base_url or "").strip().lower()
+        model = str(self.model or "").strip().lower()
+        return (
+            "dashscope.aliyuncs.com" in base
+            and "deepseek-r1-distill-llama-8b" in model
+        )
+
+    def _get_text_tool_instruction(self) -> str:
+        """文本模式下的工具调用格式说明"""
+        return (
+            "\n\n=== 文本模式工具调用（当前模型不支持原生 tool_calls）===\n"
+            "当你需要调用工具时，请输出以下格式（每行一个 JSON，可多个）：\n"
+            "```\n"
+            '{"name": "工具名", "arguments": {"参数名": "参数值"}}\n'
+            "```\n"
+            "示例：\n"
+            '{"name": "r2_open_file", "arguments": {"file_path": "/path/to/file.so"}}\n'
+            "必须使用 tools/list 中的工具名，arguments 必须包含 required 字段。\n"
+        )
+
+    @staticmethod
+    def _parse_json_tool_calls(text: str) -> List[Dict[str, Any]]:
+        """解析文本中的 JSON 格式工具调用（用于不支持原生 tools 的模型）"""
+        content = (text or "").strip()
+        if not content:
+            return []
+        calls: List[Dict[str, Any]] = []
+        # 匹配 ```...``` 代码块内的 JSON
+        block_pattern = re.compile(r"```(?:json)?\s*\n?([\s\S]*?)```", re.IGNORECASE)
+        for m in block_pattern.finditer(content):
+            block = m.group(1).strip()
+            for line in block.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("//"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    name = str(obj.get("name") or obj.get("tool") or "").strip()
+                    args = obj.get("arguments") or obj.get("args") or obj.get("params") or {}
+                    if not name or not isinstance(args, dict):
+                        continue
+                    calls.append({
+                        "id": f"txt_{len(calls)}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+                    })
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+        if calls:
+            return calls
+        # 尝试整行匹配
+        for line in content.split("\n"):
+            line = line.strip()
+            if "name" not in line or "arguments" not in line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict) and obj.get("name"):
+                    args = obj.get("arguments") or obj.get("args") or {}
+                    if not isinstance(args, dict):
+                        args = {}
+                    calls.append({
+                        "id": f"txt_{len(calls)}",
+                        "type": "function",
+                        "function": {"name": str(obj["name"]), "arguments": json.dumps(args, ensure_ascii=False)},
+                    })
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        return calls
+
     @staticmethod
     def _parse_dsml_function_calls(text: str) -> List[Dict[str, Any]]:
         content = (text or "").strip()
@@ -695,6 +807,57 @@ class AIAnalyzer:
                     item["function"]["name"] = fn.name
                 if fn.arguments:
                     item["function"]["arguments"] += fn.arguments
+
+    def _sanitize_messages_for_text_tool_mode(self) -> None:
+        """text_tool_mode 下：将 assistant(tool_calls)+tool 块转为纯文本，避免 API 拒绝"""
+        if not self._use_text_tool_mode():
+            return
+        src = [m for m in self.messages if isinstance(m, dict)]
+        cleaned: List[ChatCompletionMessageParam] = []
+        i = 0
+        while i < len(src):
+            msg = src[i]
+            role = str(msg.get("role", "") or "")
+            if role != "assistant":
+                if role != "tool":
+                    cleaned.append(as_msg(msg))
+                i += 1
+                continue
+            tcs_raw = msg.get("tool_calls")
+            if not (isinstance(tcs_raw, list) and tcs_raw):
+                cleaned.append(as_msg(msg))
+                i += 1
+                continue
+            j = i + 1
+            tool_msgs: List[Dict[str, Any]] = []
+            while j < len(src) and str(src[j].get("role", "") or "") == "tool":
+                tool_msgs.append(src[j])
+                j += 1
+            parts: List[str] = []
+            for tc in tcs_raw:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                name = str(fn.get("name", "") or "").strip() if isinstance(fn, dict) else ""
+                if not name:
+                    continue
+                args_raw = (fn.get("arguments") or "") if isinstance(fn, dict) else ""
+                try:
+                    args = json.loads(args_raw) if args_raw else {}
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                args_str = json.dumps(args, ensure_ascii=False)[:120]
+                parts.append(f"{name}({args_str})")
+            tool_summaries: List[str] = []
+            for tm in tool_msgs[:5]:
+                c = str(tm.get("content", "") or "")[:200]
+                if c:
+                    tool_summaries.append(c.replace("\n", " ").strip())
+            summary = "; ".join(tool_summaries) if tool_summaries else "(无返回)"
+            collapsed = {"role": "assistant", "content": f"[已执行] {', '.join(parts)} → {summary}"}
+            cleaned.append(as_msg(collapsed))
+            i = j
+        self.messages = cleaned
 
     def _sanitize_messages_for_tools(self) -> None:
         src = [m for m in self.messages if isinstance(m, dict)]
@@ -989,12 +1152,20 @@ class AIAnalyzer:
         self._trim_messages()
         if debug_enabled():
             debug_log("model_request", {"tool_choice": tool_choice, "messages": self._messages_stats(self.messages)})
-        req: Dict[str, Any] = {"model": self.model, "messages": self.messages, "tool_choice": tool_choice,
-                               "stream": True}
-        self._maybe_enable_web_search(req)
-        self._maybe_enable_dashscope_deep_thinking(req)
-        self._maybe_enable_deepseek_thinking(req)
-        if tool_choice != "none":
+        base_low = (self.base_url or "").strip().lower()
+        use_tools = tool_choice != "none"
+        text_tool_mode = self._use_text_tool_mode()
+        if text_tool_mode and use_tools:
+            tool_choice = "none"
+            use_tools = False
+        use_no_stream = use_tools and "dashscope.aliyuncs.com" in base_low
+        req: Dict[str, Any] = {"model": self.model, "messages": self.messages, "stream": not use_no_stream}
+        if use_tools:
+            req["tool_choice"] = tool_choice
+        self._maybe_enable_web_search(req, tool_choice=tool_choice)
+        self._maybe_enable_dashscope_deep_thinking(req, tool_choice=tool_choice)
+        self._maybe_enable_deepseek_thinking(req, tool_choice=tool_choice)
+        if use_tools:
             req["tools"] = [
                 ChatCompletionToolParam(
                     type="function",
@@ -1054,6 +1225,60 @@ class AIAnalyzer:
         _stream_errs: tuple[type[BaseException], ...] = tuple(_stream_err_list)
 
         try:
+            if use_no_stream:
+                resp = self.client.chat.completions.create(**req)
+                choice = resp.choices[0] if resp.choices else None
+                m = getattr(choice, "message", None) if choice else None
+                c = ""
+                if m:
+                    r = getattr(m, "reasoning_content", None) or ""
+                    c = getattr(m, "content", None) or ""
+                    if r:
+                        writer.write_prefix("[思考] ")
+                        writer.write(r)
+                        thinking_started = True
+                        reasoning = r
+                    if c:
+                        if not self._contains_dsml_markup(c):
+                            writer.write_prefix("[回答] ")
+                            head = (c or "").lstrip()
+                            looks_md = bool(
+                                head.startswith("#") or head.startswith("```") or head.startswith(">")
+                                or re.search(r"(?m)^\s*[-*]\s+\S+", c) is not None
+                                or re.search(r"(?m)^\s*\d+\.\s+\S+", c) is not None
+                            )
+                            if looks_md and writer.enable_markdown_stream():
+                                writer.newline()
+                                streamed_markdown = True
+                            writer.write(c)
+                        raw_content = c
+                        msg["content"] = c
+                    tcs = getattr(m, "tool_calls", None) or []
+                    for tc in tcs:
+                        if hasattr(tc, "id") and hasattr(tc, "function"):
+                            fn = tc.function
+                            tool_calls.append({
+                                "id": getattr(tc, "id", "") or "",
+                                "type": "function",
+                                "function": {
+                                    "name": getattr(fn, "name", "") or "",
+                                    "arguments": getattr(fn, "arguments", "") or "",
+                                },
+                            })
+                    last_finish_reason = str(getattr(choice, "finish_reason", "") or "")
+                started = bool(c)
+                writer.stop_markdown_stream()
+                if thinking_started or started:
+                    writer.newline()
+                msg["reasoning_content"] = reasoning
+                msg["_finish_reason"] = last_finish_reason
+                msg["_answer_started"] = started
+                msg["_thinking_started"] = thinking_started
+                msg["_raw_content"] = raw_content
+                msg["_streamed_markdown"] = streamed_markdown
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
+                return msg
             stream = self.client.chat.completions.create(**req)
         except _stream_errs as exc:
             raise RuntimeError(f"AI 请求失败（连接/超时/服务端错误）: {type(exc).__name__}: {exc}") from exc
@@ -1216,6 +1441,13 @@ class AIAnalyzer:
         mode_norm = str(mode or "").strip().lower()
         chat_mode: Literal["strict", "loose"] = "strict" if mode_norm == "strict" else "loose"
         self._ensure_system_prompt_for_mode(chat_mode)
+        if self._use_text_tool_mode():
+            print_info("[提示] 当前模型使用文本模式工具调用（无原生 tools），将解析模型输出的 JSON 格式。")
+            sys_msg = self.messages[0] if self.messages else None
+            if isinstance(sys_msg, dict) and sys_msg.get("role") == "system":
+                cur = str(sys_msg.get("content", "") or "")
+                if self._get_text_tool_instruction() not in cur:
+                    sys_msg["content"] = cur + self._get_text_tool_instruction()
 
         self.messages.append(as_msg({"role": "user", "content": user_text}))
         self._trim_messages()
@@ -1299,6 +1531,13 @@ class AIAnalyzer:
                     assistant_msg["tool_calls"] = dsml_calls
                     tool_calls = dsml_calls
                     assistant_msg["content"] = ""
+                elif self._use_text_tool_mode():
+                    json_calls = self._parse_json_tool_calls(dsml_src)
+                    if json_calls:
+                        print_info("[提示] 检测到 JSON 格式工具调用，已解析并继续执行。")
+                        assistant_msg["tool_calls"] = json_calls
+                        tool_calls = json_calls
+                        assistant_msg["content"] = ""
             if not tool_calls:
                 content = assistant_msg.get("content") or ""
                 reasoning_text = assistant_msg.get("reasoning_content") or ""
