@@ -249,6 +249,27 @@ def _run_ai_question(ctx: CommandContext, question: str, *, mode: str = "loose")
         print_info(msg)
     prompt = (kb_ctx + "\n\n" if kb_ctx else "") + question
     try:
+        if ctx.active_session_id:
+            ctx.analyzer.session_ids.add(str(ctx.active_session_id))
+            ctx.analyzer.last_good_session_id = str(ctx.active_session_id)
+        if ctx.known_sessions:
+            ctx.analyzer.session_ids.update(set(ctx.known_sessions))
+    except (TypeError, ValueError, AttributeError):
+        pass
+    try:
+        m = re.search(r"(/storage/[^\s\"']+)", question)
+        if m:
+            ctx.analyzer.last_r2_file_path = str(m.group(1)).strip()
+    except re.error:
+        pass
+    if ctx.active_session_id:
+        prompt = (
+            f"[状态] 当前已存在可用 r2 session_id={ctx.active_session_id}（来自手动 call）。\n"
+            f"- 需要 r2_* 工具时请直接使用该 session_id。\n"
+            f"- 只有当工具返回 Invalid session_id/session invalid 时，才允许 r2_open_file 重新获取新 session。\n\n"
+            + prompt
+        )
+    try:
         result = ctx.analyzer.chat(prompt, ctx.bridge, mode=mode)
     except UserInterruptError:
         return "已中断当前 AI 思考。"
